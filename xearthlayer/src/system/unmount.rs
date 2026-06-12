@@ -46,6 +46,62 @@ pub fn unmount_fuse(mountpoint: &Path, force: bool) -> bool {
     }
 }
 
+/// Detect a stale FUSE mount at `mountpoint`.
+///
+/// A FUSE mount whose daemon died without unmounting (crash, SIGKILL,
+/// system sleep) stays in the kernel mount table, but every operation on
+/// it fails — on macOS/macFUSE with `ENXIO` ("Device not configured"),
+/// on Linux with `ENOTCONN` ("Transport endpoint is not connected").
+/// Mounting over such a corpse fails, so it must be cleared first.
+///
+/// A healthy mount, an ordinary directory, or a missing path are all
+/// reported as not stale.
+///
+/// Detection uses `opendir(2)` (via `read_dir`), not `stat(2)`: on macOS
+/// the kernel serves cached attributes for a dead macFUSE mountpoint, so
+/// `stat` succeeds while any real operation — including reading the
+/// directory — fails with `ENXIO` (verified empirically against a killed
+/// mount).
+pub fn is_stale_fuse_mount(mountpoint: &Path) -> bool {
+    match std::fs::read_dir(mountpoint) {
+        Ok(_) => false,
+        Err(e) => is_stale_mount_error(&e),
+    }
+}
+
+/// Classify an I/O error from `stat(2)` on a mountpoint as "stale FUSE
+/// mount" or not. Extracted as a pure function for testability.
+fn is_stale_mount_error(error: &std::io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::ENXIO) | Some(libc::ENOTCONN)
+    )
+}
+
+/// Detect and clear a stale FUSE mount at `mountpoint`.
+///
+/// Returns `true` if a stale mount was found and successfully unmounted,
+/// `false` if the mountpoint was healthy (nothing to do). Logs a warning
+/// if a stale mount is found but cannot be cleared.
+pub fn recover_stale_fuse_mount(mountpoint: &Path) -> bool {
+    if !is_stale_fuse_mount(mountpoint) {
+        return false;
+    }
+    warn!(
+        mountpoint = %mountpoint.display(),
+        "Stale FUSE mount detected from a previous run; force-unmounting"
+    );
+    let cleared = unmount_fuse(mountpoint, true);
+    if !cleared {
+        warn!(
+            mountpoint = %mountpoint.display(),
+            "Could not clear stale FUSE mount; mounting will likely fail. \
+             Unmount manually with: umount <mountpoint>"
+        );
+    }
+    cleared
+}
+
 /// Run one unmount command, treating "already unmounted" as success.
 fn run_unmount(cmd: &mut Command, mountpoint: &Path) -> bool {
     match cmd.output() {
@@ -94,5 +150,44 @@ mod tests {
             unmount_fuse(dir.path(), false),
             "non-mountpoint should be reported as already unmounted"
         );
+    }
+
+    /// The stale-mount errno classification: ENXIO (macFUSE) and ENOTCONN
+    /// (Linux FUSE) mean a dead mount; anything else does not. A real dead
+    /// mount cannot be created in CI, so the policy is tested via the pure
+    /// classifier.
+    #[test]
+    fn stale_mount_error_classification() {
+        let stale_macos = std::io::Error::from_raw_os_error(libc::ENXIO);
+        let stale_linux = std::io::Error::from_raw_os_error(libc::ENOTCONN);
+        let missing = std::io::Error::from_raw_os_error(libc::ENOENT);
+        let denied = std::io::Error::from_raw_os_error(libc::EACCES);
+
+        assert!(is_stale_mount_error(&stale_macos), "ENXIO is stale");
+        assert!(is_stale_mount_error(&stale_linux), "ENOTCONN is stale");
+        assert!(!is_stale_mount_error(&missing), "ENOENT is not stale");
+        assert!(!is_stale_mount_error(&denied), "EACCES is not stale");
+    }
+
+    /// A healthy directory is not a stale mount.
+    #[test]
+    fn healthy_directory_is_not_stale() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!is_stale_fuse_mount(dir.path()));
+    }
+
+    /// A missing path is not a stale mount (nothing to recover).
+    #[test]
+    fn missing_path_is_not_stale() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = dir.path().join("does-not-exist");
+        assert!(!is_stale_fuse_mount(&missing));
+    }
+
+    /// Recovery on a healthy mountpoint is a no-op that reports false.
+    #[test]
+    fn recover_on_healthy_mountpoint_is_noop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!recover_stale_fuse_mount(dir.path()));
     }
 }

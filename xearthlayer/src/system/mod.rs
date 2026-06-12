@@ -42,4 +42,4 @@ pub use recommendations::{
     recommended_disk_cache, recommended_disk_io_profile, recommended_memory_cache,
     RecommendedSettings, MIN_DISK_CACHE_BYTES, MIN_MEMORY_CACHE_BYTES,
 };
-pub use unmount::unmount_fuse;
+pub use unmount::{is_stale_fuse_mount, recover_stale_fuse_mount, unmount_fuse};
