@@ -439,8 +439,8 @@ matrix jobs are renamed.
 ## Platform Support
 
 - **Linux**: ✅ Fully working (native FUSE)
+- **macOS**: ✅ Working (requires [macFUSE](https://macfuse.io); Apple Silicon tested; fuse3 pinned to a fork rev carrying the reply-resilience patch, upstream PR [Sherlock-Holo/fuse3#137](https://github.com/Sherlock-Holo/fuse3/pull/137))
 - **Windows**: ⏳ Planned (requires Dokan/WinFSP)
-- **macOS**: ⏳ Planned (requires macFUSE)
 
 ## References
 

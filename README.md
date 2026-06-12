@@ -54,7 +54,7 @@ See [How It Works](docs/how-it-works.md) for detailed architecture.
 - **Multiple compression backends**: ISPC SIMD (default), pure-Rust software, or GPU-accelerated via wgpu compute shaders
 - Real-time dashboard showing cache, download, and prefetch status
 - Works with Ortho4XP-generated scenery
-- Linux support
+- Linux and macOS support
 
 ## Quick Start
 
@@ -178,7 +178,7 @@ Run `xearthlayer --help` for all options.
 ## Requirements
 
 - **X-Plane 12**
-- **Linux** with FUSE support
+- **Linux** with FUSE support, or **macOS** with [macFUSE](https://macfuse.io) installed
 - **Modern GPU** with 8GB VRAM or higher, 16GB+ recommended (for X-Plane rendering)
 - **Fast Internet connection** for streaming imagery, recommended 800Mbps downstream or better
 
