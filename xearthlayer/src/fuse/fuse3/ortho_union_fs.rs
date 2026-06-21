@@ -37,7 +37,7 @@
 //! missing textures dynamically using its configured imagery provider.
 
 use super::inode::InodeManager;
-use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL};
+use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL, VIRTUAL_DDS_OPEN_FLAGS};
 use super::types::{Fuse3Error, Fuse3Result};
 use crate::executor::{DdsClient, StorageConcurrencyLimiter};
 use crate::fuse::coalesce::RequestCoalescer;
@@ -63,33 +63,6 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, Instrument};
-
-/// FUSE open flag: bypass kernel page cache for this file.
-///
-/// From `linux/fuse.h`: `#define FOPEN_DIRECT_IO (1 << 0)`
-///
-/// When set in `ReplyOpen::flags`, the kernel sends every `read()` through
-/// the FUSE handler instead of serving from its page cache. Used for virtual
-/// DDS files so that `FuseLoadMonitor`, `SceneTracker`, and `DdsAccessEvent`
-/// see every X-Plane read.
-///
-/// Only referenced on Linux (macOS serves virtual DDS through the page cache —
-/// see [`VIRTUAL_DDS_OPEN_FLAGS`]), so it is dead code on macOS.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
-const FOPEN_DIRECT_IO: u32 = 1;
-
-/// Open flags reported for virtual DDS files.
-///
-/// On Linux we set [`FOPEN_DIRECT_IO`] so every `read()` reaches our handler
-/// (feeding the load monitor / scene tracker). On **macOS we must not**:
-/// X-Plane memory-maps texture files, and macFUSE faults with `EXC_BAD_ACCESS`
-/// when a `direct_io` file is `mmap`ed — `mmap` needs the page cache that
-/// `direct_io` bypasses. So macOS serves DDS through the page cache (flags 0),
-/// trading per-read tracking for not crashing the sim's texture loader.
-#[cfg(not(target_os = "macos"))]
-const VIRTUAL_DDS_OPEN_FLAGS: u32 = FOPEN_DIRECT_IO;
-#[cfg(target_os = "macos")]
-const VIRTUAL_DDS_OPEN_FLAGS: u32 = 0;
 
 /// Consolidated ortho union FUSE filesystem.
 ///

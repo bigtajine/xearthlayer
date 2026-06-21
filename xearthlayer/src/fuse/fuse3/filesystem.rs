@@ -4,7 +4,7 @@
 //! All operations are async and run concurrently on the Tokio runtime.
 
 use super::inode::InodeManager;
-use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL};
+use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL, VIRTUAL_DDS_OPEN_FLAGS};
 use super::types::{Fuse3Error, Fuse3Result, MountHandle};
 use crate::executor::{DdsClient, StorageConcurrencyLimiter};
 use crate::fuse::parse_dds_filename;
@@ -25,10 +25,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
 use tracing::{debug, trace};
-
-/// `FOPEN_DIRECT_IO` from `linux/fuse.h`: `#define FOPEN_DIRECT_IO (1 << 0)`.
-/// Bypasses the kernel page cache so every `read()` reaches our handler.
-const FOPEN_DIRECT_IO: u32 = 1;
 
 /// Async multi-threaded FUSE filesystem using fuse3.
 ///
@@ -340,10 +336,12 @@ impl Filesystem for Fuse3PassthroughFS {
     /// internally when the server returns `ENOSYS`, but macFUSE does not —
     /// it propagates that `ENOSYS` to the `read()` syscall. So we implement a
     /// trivial stateless `open` (reads key off the inode, not a file handle).
-    /// Virtual DDS files request direct I/O so every read reaches our handler.
+    /// Virtual DDS files report [`VIRTUAL_DDS_OPEN_FLAGS`]: direct I/O on Linux so
+    /// every read reaches our handler, but page cache on macOS — X-Plane mmaps
+    /// textures and macFUSE faults when a `direct_io` file is mapped.
     async fn open(&self, _req: Request, ino: u64, _flags: u32) -> Fuse3InternalResult<ReplyOpen> {
         let flags = if InodeManager::is_virtual_inode(ino) {
-            FOPEN_DIRECT_IO
+            VIRTUAL_DDS_OPEN_FLAGS
         } else {
             0
         };
