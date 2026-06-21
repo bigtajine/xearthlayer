@@ -1,8 +1,11 @@
-//! Platform-abstracted FUSE unmounting.
+//! Platform-abstracted FUSE mount-table operations.
 //!
-//! Linux unmounts FUSE filesystems with `fusermount3`/`fusermount`, while
-//! macOS (macFUSE) uses the BSD `umount(8)`. Both the panic handler and the
-//! spawned-mount Drop fallback need the same logic, so it lives here once.
+//! Linux unmounts FUSE filesystems with `fusermount3`/`fusermount` and exposes
+//! the mount table as `/proc/mounts`, while macOS (macFUSE) uses the BSD
+//! `umount(8)` and `mount(8)`. Everything that needs to unmount a mount or ask
+//! "is this path mounted?" shares the same platform logic, so it lives here
+//! once: the panic handler, the spawned-mount Drop fallback, and the package
+//! manager's status display.
 
 use std::path::Path;
 use std::process::Command;
@@ -44,6 +47,70 @@ pub fn unmount_fuse(mountpoint: &Path, force: bool) -> bool {
         fallback.arg(flag).arg(mountpoint);
         run_unmount(&mut fallback, mountpoint)
     }
+}
+
+/// Whether `path` is currently a mountpoint, per the OS mount table.
+///
+/// Platform-specific because the mount table lives in different places: Linux
+/// exposes it as `/proc/mounts`; macOS has no such file and must be queried via
+/// `mount(8)`. A wrong answer here is not cosmetic — callers gate real `umount`
+/// escalation (`SpawnedMountHandle`) and the user-facing package mount status on
+/// it, so a Linux-only implementation silently mis-reports every macOS mount.
+///
+/// This answers "is the kernel mount-table entry present", which is also `true`
+/// for a wedged macFUSE mount (daemon dead, entry lingering) — exactly the
+/// zombie the unmount fallback must still act on. Use [`is_stale_fuse_mount`] to
+/// distinguish a healthy mount from a wedged one.
+pub fn is_path_mounted(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+
+    #[cfg(target_os = "macos")]
+    {
+        match Command::new("/sbin/mount").output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                mount_output_contains(&stdout, &path_str)
+            }
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        match std::fs::read_to_string("/proc/mounts") {
+            Ok(mounts) => proc_mounts_contains(&mounts, &path_str),
+            Err(_) => false,
+        }
+    }
+}
+
+/// Whether `/proc/mounts` content lists `path` as a mountpoint.
+///
+/// Pure function (no I/O) so the parsing is unit-testable. Each line is
+/// `device mountpoint fstype opts ...`; we match field 2.
+#[cfg(not(target_os = "macos"))]
+fn proc_mounts_contains(mounts: &str, path: &str) -> bool {
+    mounts.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next(); // device
+        fields.next() == Some(path)
+    })
+}
+
+/// Whether BSD `mount(8)` output lists `path` as a mountpoint.
+///
+/// Pure function (no I/O) so the parsing is unit-testable. Lines look like
+/// `device on /mount/point (fstype, opts...)`; the mountpoint sits between
+/// " on " and the trailing " (". Splitting on the last " (" keeps mountpoints
+/// that contain spaces (e.g. `X-Plane 12`) intact.
+#[cfg(target_os = "macos")]
+fn mount_output_contains(output: &str, path: &str) -> bool {
+    output.lines().any(|line| {
+        line.split_once(" on ")
+            .and_then(|(_, rest)| rest.rsplit_once(" (").map(|(mp, _)| mp))
+            .map(|mp| mp == path)
+            .unwrap_or(false)
+    })
 }
 
 /// Detect a stale FUSE mount at `mountpoint`.
@@ -189,5 +256,38 @@ mod tests {
     fn recover_on_healthy_mountpoint_is_noop() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert!(!recover_stale_fuse_mount(dir.path()));
+    }
+
+    /// A freshly created directory is not a mountpoint. Exercises the real
+    /// platform mount-table query end to end without needing a live mount.
+    #[test]
+    fn ordinary_directory_is_not_mounted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!is_path_mounted(dir.path()));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn proc_mounts_contains_detects_mountpoint() {
+        let mounts = "proc /proc proc rw,nosuid 0 0\n\
+                      fuse.xel /mnt/zzXEL_ortho fuse rw 0 0\n\
+                      /dev/sda1 / ext4 rw 0 0\n";
+        assert!(proc_mounts_contains(mounts, "/mnt/zzXEL_ortho"));
+        assert!(proc_mounts_contains(mounts, "/"));
+        assert!(!proc_mounts_contains(mounts, "/mnt/not_mounted"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mount_output_contains_detects_macfuse_mountpoint() {
+        // Real macFUSE line shape, including a mountpoint that contains spaces.
+        let output = "/dev/disk1s1 on / (apfs, local, journaled)\n\
+                      xearthlayer@macfuse0 on /Users/me/X-Plane 12/Custom Scenery/zzXEL_ortho (macfuse, nodev, nosuid, synchronous, mounted by me)\n";
+        assert!(mount_output_contains(
+            output,
+            "/Users/me/X-Plane 12/Custom Scenery/zzXEL_ortho"
+        ));
+        assert!(mount_output_contains(output, "/"));
+        assert!(!mount_output_contains(output, "/Users/me/elsewhere"));
     }
 }

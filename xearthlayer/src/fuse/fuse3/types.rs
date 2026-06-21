@@ -264,65 +264,12 @@ impl SpawnedMountHandle {
 
     /// Check if a path is currently mounted.
     ///
-    /// Platform-specific because the mount table lives in different places:
-    /// Linux exposes it as `/proc/mounts`, while macOS has no such file and
-    /// requires querying the kernel via `mount(8)`. A wrong answer here is not
+    /// Delegates to the shared, platform-aware [`crate::system::is_path_mounted`]
+    /// so mount detection lives in exactly one place. A wrong answer here is not
     /// cosmetic: `unmount_sync` only escalates to a real `umount` when this
-    /// returns `true`, so a Linux-only implementation silently disabled the
-    /// macOS unmount fallback and left zombie macFUSE mounts behind.
+    /// returns `true`.
     fn is_mounted(path: &Path) -> bool {
-        let path_str = path.to_string_lossy();
-
-        #[cfg(target_os = "macos")]
-        {
-            // macOS has no /proc/mounts; ask the kernel via mount(8). This also
-            // correctly reports a wedged macFUSE mount (the daemon dead but the
-            // entry still present), which is exactly the zombie we must clear.
-            match std::process::Command::new("/sbin/mount").output() {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    Self::mount_output_contains(&stdout, &path_str)
-                }
-                Err(_) => false,
-            }
-        }
-
-        #[cfg(not(target_os = "macos"))]
-        {
-            match std::fs::read_to_string("/proc/mounts") {
-                Ok(mounts) => Self::proc_mounts_contains(&mounts, &path_str),
-                Err(_) => false,
-            }
-        }
-    }
-
-    /// Whether `/proc/mounts` content lists `path` as a mountpoint.
-    ///
-    /// Pure function (no I/O) so the parsing is unit-testable. Each line is
-    /// `device mountpoint fstype opts ...`; we match field 2.
-    #[cfg(not(target_os = "macos"))]
-    fn proc_mounts_contains(mounts: &str, path: &str) -> bool {
-        mounts.lines().any(|line| {
-            let mut fields = line.split_whitespace();
-            fields.next(); // device
-            fields.next() == Some(path)
-        })
-    }
-
-    /// Whether BSD `mount(8)` output lists `path` as a mountpoint.
-    ///
-    /// Pure function (no I/O) so the parsing is unit-testable. Lines look like
-    /// `device on /mount/point (fstype, opts...)`; the mountpoint sits between
-    /// " on " and the trailing " (". Mountpoints with spaces (e.g.
-    /// `X-Plane 12`) are handled because we split on the last " (".
-    #[cfg(target_os = "macos")]
-    fn mount_output_contains(output: &str, path: &str) -> bool {
-        output.lines().any(|line| {
-            line.split_once(" on ")
-                .and_then(|(_, rest)| rest.rsplit_once(" (").map(|(mp, _)| mp))
-                .map(|mp| mp == path)
-                .unwrap_or(false)
-        })
+        crate::system::is_path_mounted(path)
     }
 }
 
@@ -463,40 +410,6 @@ mod tests {
         }
         // Prevent Drop from trying unmount_sync
         handle.unmount_tx.take();
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    #[test]
-    fn proc_mounts_contains_detects_mountpoint() {
-        let mounts = "proc /proc proc rw,nosuid 0 0\n\
-                      fuse.xel /mnt/zzXEL_ortho fuse rw 0 0\n\
-                      /dev/sda1 / ext4 rw 0 0\n";
-        assert!(SpawnedMountHandle::proc_mounts_contains(
-            mounts,
-            "/mnt/zzXEL_ortho"
-        ));
-        assert!(SpawnedMountHandle::proc_mounts_contains(mounts, "/"));
-        assert!(!SpawnedMountHandle::proc_mounts_contains(
-            mounts,
-            "/mnt/not_mounted"
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn mount_output_contains_detects_macfuse_mountpoint() {
-        // Real macFUSE line shape, including a mountpoint that contains spaces.
-        let output = "/dev/disk1s1 on / (apfs, local, journaled)\n\
-                      xearthlayer@macfuse0 on /Users/me/X-Plane 12/Custom Scenery/zzXEL_ortho (macfuse, nodev, nosuid, synchronous, mounted by me)\n";
-        assert!(SpawnedMountHandle::mount_output_contains(
-            output,
-            "/Users/me/X-Plane 12/Custom Scenery/zzXEL_ortho"
-        ));
-        assert!(SpawnedMountHandle::mount_output_contains(output, "/"));
-        assert!(!SpawnedMountHandle::mount_output_contains(
-            output,
-            "/Users/me/elsewhere"
-        ));
     }
 
     #[tokio::test]

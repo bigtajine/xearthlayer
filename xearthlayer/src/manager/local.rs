@@ -256,34 +256,18 @@ fn calculate_dir_size(path: &Path) -> std::io::Result<u64> {
 /// Only ortho packages can be mounted (via FUSE). Overlay packages
 /// return `Unknown` since they don't use FUSE mounts.
 fn check_mount_status(path: &Path, package_type: PackageType) -> MountStatus {
-    // Only ortho packages can be mounted
+    // Only ortho packages can be mounted (via FUSE).
     if package_type != PackageType::Ortho {
         return MountStatus::Unknown;
     }
 
-    // On Linux, check /proc/mounts for the path
-    #[cfg(target_os = "linux")]
-    {
-        if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
-            let path_str = path.to_string_lossy();
-            for line in mounts.lines() {
-                // /proc/mounts format: device mountpoint type options dump pass
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 && parts[1] == path_str {
-                    return MountStatus::Mounted;
-                }
-            }
-            return MountStatus::NotMounted;
-        }
+    // Share the platform-aware mount-table query with the unmount path so macOS
+    // (which has no /proc/mounts) reports real status instead of Unknown.
+    if crate::system::is_path_mounted(path) {
+        MountStatus::Mounted
+    } else {
+        MountStatus::NotMounted
     }
-
-    // On other platforms, return Unknown
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = path; // Suppress unused warning
-    }
-
-    MountStatus::Unknown
 }
 
 #[cfg(test)]
