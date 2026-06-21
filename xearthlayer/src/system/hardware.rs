@@ -215,6 +215,7 @@ pub fn detect_cpu_cores() -> usize {
 /// # Platform Support
 ///
 /// - **Linux**: Parses `/proc/meminfo`
+/// - **macOS**: Reads `hw.memsize` via `sysctl(8)`
 /// - **Other platforms**: Returns fallback of 8GB
 #[cfg(target_os = "linux")]
 pub fn detect_total_memory() -> usize {
@@ -239,9 +240,39 @@ pub fn detect_total_memory() -> usize {
     fallback_memory()
 }
 
-#[cfg(not(target_os = "linux"))]
+/// macOS has no `/proc/meminfo`; `hw.memsize` reports total physical RAM in
+/// bytes. Without this, the setup wizard silently sized the cache from the 8GB
+/// fallback (RAM/12 → ~682MB) on every Mac regardless of actual memory.
+#[cfg(target_os = "macos")]
 pub fn detect_total_memory() -> usize {
-    // Fallback for non-Linux: 8GB
+    use std::process::Command;
+
+    Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| parse_sysctl_memsize(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_else(fallback_memory)
+}
+
+/// Parse the byte count printed by `sysctl -n hw.memsize`.
+///
+/// Pure function (no I/O) so the parsing is unit-testable. The output is a
+/// single decimal byte count, e.g. `137438953472\n`. Returns `None` for empty,
+/// non-numeric, or zero values so the caller can fall back.
+#[cfg(target_os = "macos")]
+fn parse_sysctl_memsize(output: &str) -> Option<usize> {
+    output
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|&bytes| bytes > 0)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn detect_total_memory() -> usize {
+    // Fallback for unsupported platforms: 8GB
     fallback_memory()
 }
 
@@ -265,6 +296,29 @@ mod tests {
     fn test_detect_total_memory_returns_positive() {
         let memory = detect_total_memory();
         assert!(memory > 0, "Should detect some memory");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn parse_sysctl_memsize_parses_bytes_and_rejects_garbage() {
+        assert_eq!(parse_sysctl_memsize("137438953472\n"), Some(137438953472));
+        assert_eq!(parse_sysctl_memsize("  68719476736  "), Some(68719476736));
+        assert_eq!(parse_sysctl_memsize(""), None);
+        assert_eq!(parse_sysctl_memsize("not-a-number"), None);
+        assert_eq!(parse_sysctl_memsize("0"), None, "zero is not a valid total");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn detect_total_memory_reads_real_ram_on_macos() {
+        // Exercises the sysctl call end to end. Any real Mac has at least the
+        // 8GB fallback worth of RAM, so this both confirms it doesn't panic and
+        // that we get a plausible value rather than a parse failure.
+        let mem = detect_total_memory();
+        assert!(
+            mem >= fallback_memory(),
+            "should detect at least the fallback worth of RAM, got {mem}"
+        );
     }
 
     #[test]
