@@ -178,7 +178,7 @@ Run `xearthlayer --help` for all options.
 ## Requirements
 
 - **X-Plane 12**
-- **Linux** with FUSE support, or **macOS** with [macFUSE](https://macfuse.io) installed
+- **Linux** with FUSE support, or **macOS** with [macFUSE](https://macfuse.io) installed (see the [macOS guide](docs/macos.md))
 - **Modern GPU** with 8GB VRAM or higher, 16GB+ recommended (for X-Plane rendering)
 - **Fast Internet connection** for streaming imagery, recommended 800Mbps downstream or better
 
