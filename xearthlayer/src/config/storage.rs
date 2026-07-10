@@ -156,12 +156,21 @@ impl DiskIoProfile {
     ///
     /// On detection failure, falls back to `Ssd`.
     pub fn resolve_for_path(&self, path: &Path) -> Self {
+        self.try_resolve_for_path(path).unwrap_or_else(|| {
+            debug!("Storage detection failed, defaulting to SSD profile");
+            Self::Ssd
+        })
+    }
+
+    /// Detect the appropriate profile for the given path, surfacing failure.
+    ///
+    /// Like [`resolve_for_path`](Self::resolve_for_path) but returns `None`
+    /// when `self` is `Auto` and detection fails, so callers (e.g. the setup
+    /// wizard) can tell a detected profile from a fallback guess.
+    pub fn try_resolve_for_path(&self, path: &Path) -> Option<Self> {
         match self {
-            Self::Auto => detect_storage_type(path).unwrap_or_else(|| {
-                debug!("Storage detection failed, defaulting to SSD profile");
-                Self::Ssd
-            }),
-            other => *other,
+            Self::Auto => detect_storage_type(path),
+            other => Some(*other),
         }
     }
 }
@@ -516,6 +525,25 @@ mod tests {
         assert_eq!("nvme".parse(), Ok(DiskIoProfile::Nvme));
         assert_eq!("NVMe".parse(), Ok(DiskIoProfile::Nvme));
         assert_eq!("invalid".parse::<DiskIoProfile>(), Err(()));
+    }
+
+    #[test]
+    fn try_resolve_for_path_passes_explicit_profiles_through() {
+        let path = Path::new("/nonexistent-path-for-test");
+        assert_eq!(
+            DiskIoProfile::Nvme.try_resolve_for_path(path),
+            Some(DiskIoProfile::Nvme)
+        );
+        assert_eq!(
+            DiskIoProfile::Hdd.try_resolve_for_path(path),
+            Some(DiskIoProfile::Hdd)
+        );
+        // For Auto the two resolvers must agree: same profile when
+        // detection succeeds, silent SSD fallback when it fails.
+        let expected = DiskIoProfile::Auto
+            .try_resolve_for_path(path)
+            .unwrap_or(DiskIoProfile::Ssd);
+        assert_eq!(DiskIoProfile::Auto.resolve_for_path(path), expected);
     }
 
     #[test]

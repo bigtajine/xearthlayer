@@ -59,7 +59,11 @@ pub struct SystemInfo {
     pub cpu_cores: usize,
     /// Total system memory in bytes
     pub total_memory: usize,
-    /// Detected storage type for the cache path
+    /// Whether `total_memory` was actually detected. False means the
+    /// 8 GB fallback is in use and displays should say so.
+    pub memory_detected: bool,
+    /// Detected storage type for the cache path. `Unknown` when detection
+    /// failed and the SSD profile is a fallback guess.
     pub storage_type: StorageType,
     /// The underlying DiskIoProfile for configuration
     pub disk_io_profile: DiskIoProfile,
@@ -87,14 +91,23 @@ impl SystemInfo {
     /// ```
     pub fn detect(cache_path: &Path) -> Self {
         let cpu_cores = detect_cpu_cores();
-        let total_memory = detect_total_memory();
-        let disk_io_profile = DiskIoProfile::Auto.resolve_for_path(cache_path);
-        let storage_type = StorageType::from_disk_io_profile(disk_io_profile);
+        let (total_memory, memory_detected) = match try_detect_total_memory() {
+            Some(mem) => (mem, true),
+            None => (fallback_memory(), false),
+        };
+        // Distinguish a detected profile from the SSD fallback so displays
+        // can flag the guess instead of presenting it as a detection.
+        let (disk_io_profile, storage_type) =
+            match DiskIoProfile::Auto.try_resolve_for_path(cache_path) {
+                Some(profile) => (profile, StorageType::from_disk_io_profile(profile)),
+                None => (DiskIoProfile::Ssd, StorageType::Unknown),
+            };
         let cache_path_available_bytes = available_bytes_for(cache_path);
 
         Self {
             cpu_cores,
             total_memory,
+            memory_detected,
             storage_type,
             disk_io_profile,
             cache_path_available_bytes,
@@ -125,6 +138,7 @@ impl SystemInfo {
         Self {
             cpu_cores,
             total_memory,
+            memory_detected: true,
             storage_type,
             disk_io_profile,
             cache_path_available_bytes,
@@ -164,8 +178,18 @@ impl SystemInfo {
     // =========================================================================
 
     /// Get formatted memory string (e.g., "32 GB").
+    ///
+    /// When detection failed, the fallback value is flagged as a guess
+    /// (e.g., "8 GB (assumed, detection failed)") so the user can verify.
     pub fn memory_display(&self) -> String {
-        format_size(self.total_memory)
+        if self.memory_detected {
+            format_size(self.total_memory)
+        } else {
+            format!(
+                "{} (assumed, detection failed)",
+                format_size(self.total_memory)
+            )
+        }
     }
 
     /// Get formatted recommended memory cache size (e.g., "8 GB").
@@ -212,39 +236,47 @@ pub fn detect_cpu_cores() -> usize {
 
 /// Detect total system memory in bytes.
 ///
+/// Falls back to 8GB if detection fails. Use [`try_detect_total_memory`]
+/// when the caller needs to distinguish a detected value from the fallback.
+///
 /// # Platform Support
 ///
 /// - **Linux**: Parses `/proc/meminfo`
 /// - **macOS**: Reads `hw.memsize` via `sysctl(8)`
 /// - **Other platforms**: Returns fallback of 8GB
-#[cfg(target_os = "linux")]
 pub fn detect_total_memory() -> usize {
+    try_detect_total_memory().unwrap_or_else(fallback_memory)
+}
+
+/// Detect total system memory in bytes, surfacing failure.
+///
+/// Returns `None` when detection fails so callers (e.g. the setup wizard)
+/// can flag the fallback instead of presenting it as a detection.
+#[cfg(target_os = "linux")]
+pub fn try_detect_total_memory() -> Option<usize> {
     use std::fs;
 
     // Parse /proc/meminfo
-    if let Ok(content) = fs::read_to_string("/proc/meminfo") {
-        for line in content.lines() {
-            if line.starts_with("MemTotal:") {
-                // Format: "MemTotal:       16384000 kB"
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    if let Ok(kb) = parts[1].parse::<usize>() {
-                        return kb * 1024; // Convert to bytes
-                    }
+    let content = fs::read_to_string("/proc/meminfo").ok()?;
+    for line in content.lines() {
+        if line.starts_with("MemTotal:") {
+            // Format: "MemTotal:       16384000 kB"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Ok(kb) = parts[1].parse::<usize>() {
+                    return Some(kb * 1024); // Convert to bytes
                 }
             }
         }
     }
-
-    // Fallback: 8GB
-    fallback_memory()
+    None
 }
 
 /// macOS has no `/proc/meminfo`; `hw.memsize` reports total physical RAM in
 /// bytes. Without this, the setup wizard silently sized the cache from the 8GB
 /// fallback (RAM/12 → ~682MB) on every Mac regardless of actual memory.
 #[cfg(target_os = "macos")]
-pub fn detect_total_memory() -> usize {
+pub fn try_detect_total_memory() -> Option<usize> {
     use std::process::Command;
 
     Command::new("sysctl")
@@ -253,7 +285,6 @@ pub fn detect_total_memory() -> usize {
         .ok()
         .filter(|out| out.status.success())
         .and_then(|out| parse_sysctl_memsize(&String::from_utf8_lossy(&out.stdout)))
-        .unwrap_or_else(fallback_memory)
 }
 
 /// Parse the byte count printed by `sysctl -n hw.memsize`.
@@ -271,9 +302,9 @@ fn parse_sysctl_memsize(output: &str) -> Option<usize> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn detect_total_memory() -> usize {
-    // Fallback for unsupported platforms: 8GB
-    fallback_memory()
+pub fn try_detect_total_memory() -> Option<usize> {
+    // No detection on unsupported platforms; callers fall back to 8GB.
+    None
 }
 
 /// Fallback memory value when detection fails.
@@ -355,6 +386,26 @@ mod tests {
         // 16GB / 12 = 1.333... GB → format_size renders as "1.3 GB"
         assert_eq!(info.recommended_memory_cache_display(), "1.3 GB");
         assert_eq!(info.storage_display(), "SATA SSD");
+    }
+
+    #[test]
+    fn memory_display_flags_fallback_when_detection_failed() {
+        let mut info = SystemInfo::new(8, fallback_memory(), StorageType::Ssd);
+        info.memory_detected = false;
+        assert_eq!(info.memory_display(), "8 GB (assumed, detection failed)");
+
+        info.memory_detected = true;
+        assert_eq!(info.memory_display(), "8 GB");
+    }
+
+    #[test]
+    fn detect_flags_memory_as_detected_on_supported_platforms() {
+        // Linux (/proc/meminfo) and macOS (sysctl) both detect reliably;
+        // the flag must be true so no caveat is shown for real values.
+        // Storage is not asserted: /tmp may be tmpfs where detection
+        // legitimately fails (and Unknown is then the correct answer).
+        let info = SystemInfo::detect(Path::new("/tmp"));
+        assert!(info.memory_detected);
     }
 
     #[test]
