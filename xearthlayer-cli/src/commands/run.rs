@@ -90,19 +90,18 @@ pub fn run(args: RunArgs) -> Result<(), CliError> {
     }
 
     // Get Custom Scenery path (where mounts go)
-    let custom_scenery_path = config
-        .packages
-        .custom_scenery_path
-        .clone()
-        .or_else(|| config.xplane.scenery_dir.clone())
-        .or_else(|| xearthlayer::config::detect_custom_scenery().ok())
-        .ok_or_else(|| {
-            CliError::Config(
-                "No Custom Scenery path configured. \
-                 Run 'xearthlayer init' or set packages.custom_scenery_path in config.ini"
-                    .to_string(),
-            )
-        })?;
+    let custom_scenery_path = resolve_custom_scenery_path(
+        config.packages.custom_scenery_path.clone(),
+        config.xplane.scenery_dir.clone(),
+        || xearthlayer::config::detect_custom_scenery().ok(),
+    )
+    .ok_or_else(|| {
+        CliError::Config(
+            "No Custom Scenery path configured. \
+             Run 'xearthlayer init' or set packages.custom_scenery_path in config.ini"
+                .to_string(),
+        )
+    })?;
 
     if !custom_scenery_path.exists() {
         return Err(CliError::Config(format!(
@@ -401,6 +400,20 @@ fn raise_fd_limit() {
     }
 }
 
+/// Resolve the Custom Scenery path from configuration, falling back to
+/// auto-detection of the X-Plane installation.
+///
+/// Precedence: `packages.custom_scenery_path` > `xplane.scenery_dir` >
+/// auto-detect. Auto-detection is only attempted when both config values
+/// are unset.
+fn resolve_custom_scenery_path(
+    custom_scenery_path: Option<PathBuf>,
+    scenery_dir: Option<PathBuf>,
+    detect: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    custom_scenery_path.or(scenery_dir).or_else(detect)
+}
+
 /// Display warning if configuration file needs upgrade.
 ///
 /// Checks if the user's config.ini is missing settings from the current version
@@ -439,5 +452,41 @@ fn check_config_upgrade_warning() {
             // Log error but don't fail - config upgrade is informational
             tracing::warn!("Failed to analyze config for upgrade: {}", e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_custom_scenery_path_wins() {
+        let resolved = resolve_custom_scenery_path(
+            Some(PathBuf::from("/configured")),
+            Some(PathBuf::from("/scenery-dir")),
+            || panic!("auto-detect must not run when config is set"),
+        );
+        assert_eq!(resolved, Some(PathBuf::from("/configured")));
+    }
+
+    #[test]
+    fn scenery_dir_used_when_custom_scenery_path_unset() {
+        let resolved =
+            resolve_custom_scenery_path(None, Some(PathBuf::from("/scenery-dir")), || {
+                panic!("auto-detect must not run when scenery_dir is set")
+            });
+        assert_eq!(resolved, Some(PathBuf::from("/scenery-dir")));
+    }
+
+    #[test]
+    fn auto_detect_used_when_both_config_values_unset() {
+        let resolved = resolve_custom_scenery_path(None, None, || Some(PathBuf::from("/detected")));
+        assert_eq!(resolved, Some(PathBuf::from("/detected")));
+    }
+
+    #[test]
+    fn none_when_nothing_configured_and_detection_fails() {
+        let resolved = resolve_custom_scenery_path(None, None, || None);
+        assert_eq!(resolved, None);
     }
 }
