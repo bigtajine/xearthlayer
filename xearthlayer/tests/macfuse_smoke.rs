@@ -1,13 +1,17 @@
-//! macOS port spike: prove the live fuse3 backend can mount and serve
-//! files through macFUSE.
+//! Manual smoke test for the macFUSE mount path.
 //!
-//! This is a feasibility probe, not a permanent test. It mounts the real
-//! `Fuse3PassthroughFS` over a temp directory, reads a passthrough file back
-//! through the mountpoint, and unmounts. If this passes on macOS, the fuse3
-//! crate drives macFUSE end-to-end and no fuser port is required.
+//! Exercises the live fuse3 backend end-to-end: kernel → macFUSE → fuse3 →
+//! our filesystems. Mounts both the legacy `Fuse3PassthroughFS` and the
+//! production `Fuse3OrthoUnionFS` (the FS X-Plane actually talks to) over
+//! temp directories, reads files back through the mountpoints, and unmounts.
+//!
+//! Run this after bumping the pinned fuse3 fork revision or changing the
+//! mount/session code.
 //!
 //! Ignored by default because it needs macFUSE installed and the kext loaded.
-//! Run with: `cargo test --test macos_mount_spike -- --ignored --nocapture`
+//! Run with: `cargo test --test macfuse_smoke -- --ignored --nocapture`
+
+#![cfg(target_os = "macos")]
 
 use std::sync::Arc;
 use std::time::Duration;
