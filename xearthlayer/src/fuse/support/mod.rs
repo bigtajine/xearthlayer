@@ -1,6 +1,6 @@
-//! Shared types for FUSE filesystem DDS generation.
+//! Shared support types for the FUSE filesystem (used by fuse3).
 //!
-//! This module provides types used by the fuse3 passthrough filesystem:
+//! This module provides:
 //! - [`types`] - Request/response types for DDS generation
 //! - [`inode`] - Inode allocation and management
 

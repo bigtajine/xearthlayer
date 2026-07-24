@@ -1879,7 +1879,7 @@ mod tests {
         };
 
         // Virtual DDS inode (above VIRTUAL_INODE_BASE)
-        use crate::fuse::async_passthrough::inode::VIRTUAL_INODE_BASE;
+        use crate::fuse::support::inode::VIRTUAL_INODE_BASE;
         let virtual_inode = VIRTUAL_INODE_BASE + 42;
         let result: Fuse3InternalResult<ReplyOpen> =
             fs.open(req, virtual_inode, libc::O_RDONLY as u32).await;

@@ -1,4 +1,4 @@
-//! Inode management for the async passthrough filesystem.
+//! Inode management for the FUSE filesystem.
 //!
 //! This module provides inode allocation and mapping between:
 //! - Real file paths and their inodes
@@ -38,7 +38,7 @@ pub const VIRTUAL_INODE_BASE: u64 = 0x1000_0000_0000_0000;
 /// # Example
 ///
 /// ```ignore
-/// use xearthlayer::fuse::async_passthrough::InodeManager;
+/// use xearthlayer::fuse::support::inode::InodeManager;
 /// use std::path::PathBuf;
 ///
 /// let manager = InodeManager::new(PathBuf::from("/scenery"));
