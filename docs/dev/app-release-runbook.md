@@ -4,20 +4,77 @@ This runbook documents the complete workflow for releasing new versions of XEart
 
 ## Overview
 
-Releases are automated via GitHub Actions when a version tag is pushed. The workflow:
+Releases are automated via GitHub Actions when a version tag (`v*`) is pushed. The workflow:
 1. Runs `make verify` (format, lint, test)
 2. Builds the release binary once
-3. Packages for multiple platforms (Linux tarball, Debian, RPM, AUR)
-4. Creates a GitHub Release with all assets
-5. When the release PR is merged to main, `website-sync.yml` reads `version.json` and notifies the website
+3. Packages for multiple platforms (Linux tarball, Debian, RPM, AUR) — **stable
+   releases only**; pre-release tags ship the Linux tarball alone
+4. Creates a GitHub Release with all assets — a **pre-release** (not marked "Latest")
+   for unstable tags (`-dev.N` / `-alpha.N` / `-beta.N` / `-rc.N`), a normal release
+   for stable `X.Y.Z` tags
+5. For **stable** releases only: when the `release/*` PR is merged to `main`,
+   `website-sync.yml` reads `version.json` and notifies the website
+
+XEarthLayer runs two release channels in parallel — a stable line on `main` and an
+unstable line on `develop/0.4.7`. The **Stable Release** golden path below is the common
+case; **Unstable / Preview Release**, **Hotfix Release**, and **Promoting
+`develop/0.4.7` to Stable** follow it.
+
+## Branch Model & Release Channels
+
+XEarthLayer ships on two parallel channels, each anchored to a long-lived branch:
+
+| Channel | Branch | Version | Example | GitHub Release | Assets | version.json / website |
+|---------|--------|---------|---------|----------------|--------|------------------------|
+| **Stable** | `main` | `X.Y.Z` | `0.4.6` | Latest | tarball + `.deb` + `.rpm` + AUR | ✅ updated |
+| **Unstable** | `develop/0.4.7` | `X.Y.Z-dev.N` | `0.4.7-dev.3` | Pre-release (`--latest=false`) | tarball only | ❌ skipped |
+
+As the unstable line matures toward release, the pre-release identifier progresses
+`-dev.N` → `-alpha.N` → `-beta.N` → `-rc.N`, and finally drops the suffix when the branch
+is promoted to a stable `X.Y.Z` on `main`. All four pre-release forms are treated
+identically by the release workflow (published as GitHub pre-releases, Linux tarball
+only).
+
+```
+main (stable, v0.4.x)
+  ├── hotfix/*   ──PR──▶ main ──tag──▶ vX.Y.(Z+1)     # stable patch
+  ├── feature/* ──PR──▶ main ──tag──▶ vX.Y.Z          # stable release
+  │                       │
+  │                       └──────────── merge forward ───────────┐
+  │                                                               ▼
+  └── develop/0.4.7 (unstable, long-lived) ◀──────────────────────┘
+        ├── feature/* ──PR──▶ develop/0.4.7
+        └── ──tag──▶ v0.4.7-dev.N · -alpha.N · -beta.N · -rc.N     # preview
+                          │
+        release-ready:    └─ release/0.4.7 ──PR──▶ main ──tag──▶ v0.4.7   # promote
+```
+
+**The one-way rule.** Fixes land on `main` first, then forward-merge into
+`develop/0.4.7`. The develop branch is **never** merged directly back into `main`;
+promotion happens through a `release/*` branch cut from develop (see **Promoting
+`develop/0.4.7` to Stable**). This keeps `main` releasable at any moment without dragging
+unfinished 0.4.7 work into a stable release.
+
+> **Version collision when develop targets the next patch.** `develop/0.4.7` reserves
+> `0.4.7` for its own promotion. Because that is the *immediate* next number, an urgent
+> **Hotfix Release** cut from `main` cannot also be `0.4.7`. If a hotfix must ship before
+> the develop line promotes, give it the next patch (`0.4.7` → the hotfix becomes the
+> stable release and develop re-targets `0.4.8`), or fold the fix into the develop line
+> and promote once. Reserve a develop line for a further-out minor (e.g. `develop/0.5.0`)
+> when you expect stable patches to keep flowing in parallel.
 
 ## Prerequisites
 
 - Write access to the repository
 - `gh` CLI authenticated (`gh auth status`)
-- Clean working tree on `main` branch
+- Clean working tree on the branch you're releasing from — `main` for a stable release or
+  hotfix, `develop/0.4.7` for an unstable preview
 
-## Golden Path: Releasing a New Version
+## Stable Release (Golden Path)
+
+> This is the standard path: a stable `X.Y.Z` release cut from `main`. For an unstable
+> preview from `develop/0.4.7`, see **Unstable / Preview Release**; for an urgent fix to
+> the stable line, see **Hotfix Release**.
 
 ### Step 1: Prepare the Release
 
@@ -66,6 +123,10 @@ make pre-commit
 > merge that the website-sync workflow consumes.
 
 ### Step 3: Create Release Branch and PR
+
+> The branch **must** be named `release/X.Y.Z`. `website-sync.yml` only fires when the
+> merge commit message contains `release/`, so any other prefix silently skips the
+> website update.
 
 ```bash
 # Create release branch
@@ -148,6 +209,164 @@ gh api repos/samsoir/xearthlayer/contents/version.json --jq '.content' | base64 
 # Verify website shows new version (may take 1-2 minutes for CDN)
 curl -s https://xearthlayer.app | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+'
 ```
+
+## CHANGELOG Convention
+
+`CHANGELOG.md` keeps a single `## [Unreleased]` section at the top ([Keep a
+Changelog](https://keepachangelog.com/) format). **All** merged changes are recorded
+there as they land — on `main` or on `develop/0.4.7` — under the usual
+Added / Changed / Fixed / Removed groups.
+
+- Entries accumulate under `## [Unreleased]` throughout a development cycle.
+- Cutting a **preview** (`-dev.N`, etc.) does **not** move entries out of Unreleased —
+  previews are snapshots of in-progress work, so the notes stay unreleased.
+- Only a **stable release** (a normal `X.Y.Z`, a hotfix, or a `develop` promotion) moves
+  the accumulated entries under a dated `## [X.Y.Z] - YYYY-MM-DD` heading and starts a
+  fresh, empty `## [Unreleased]`.
+
+## Unstable / Preview Release
+
+Preview releases are cut from `develop/0.4.7` and published as GitHub **pre-releases**.
+They deliberately skip the stable end-user surfaces: no `version.json` change, no website
+notification, no package library, and no `.deb`/`.rpm`/AUR artifacts. Only the Linux
+tarball is published, so testers grab the binary directly from the release. The stable
+line on `main` stays authoritative for everything user-facing.
+
+### What differs from a stable release
+
+| | Stable | Preview |
+|---|--------|---------|
+| Branch | `main` | `develop/0.4.7` |
+| Version | `X.Y.Z` | `X.Y.Z-dev.N` (`-alpha`/`-beta`/`-rc`) |
+| Assets | tarball + `.deb` + `.rpm` + AUR | tarball only |
+| GitHub Release | Latest | Pre-release, `--latest=false` |
+| `version.json` / website | updated | untouched |
+| Release PR / merge | yes (`release/*` → `main`) | none — lives on `develop` |
+
+The release workflow auto-detects the pre-release suffix (`-dev`/`-alpha`/`-beta`/`-rc`)
+in the tag and: (a) marks the GitHub Release `--prerelease --latest=false`, and (b) skips
+the `.deb`/`.rpm`/AUR jobs. `website-sync.yml` never fires because it only triggers on a
+`release/*` merge to `main`, which a preview never performs.
+
+### Steps
+
+```bash
+# 1. On develop, ensure it's current (stable fixes forward-merged in — see Hotfix)
+git checkout develop/0.4.7
+git pull origin develop/0.4.7
+
+# 2. Bump the pre-release identifier in Cargo.toml, then sync the lockfile
+#    [workspace.package] version = "0.4.7-dev.N"
+#    (increment N per preview: dev.0, dev.1, …; advance to -alpha/-beta/-rc as the
+#    line matures)
+cargo update -w
+
+# 3. Record changes under the CHANGELOG "Unreleased" heading (do NOT date a section)
+
+# 4. Verify, commit, and push on develop
+make pre-commit
+git add Cargo.toml Cargo.lock CHANGELOG.md
+git commit -m "chore(release): 0.4.7-dev.N"
+git push origin develop/0.4.7
+
+# 5. Tag from develop and push — this triggers the release workflow
+git tag v0.4.7-dev.N
+git push origin v0.4.7-dev.N
+```
+
+There is no release PR and no merge step: the preview lives entirely on `develop/0.4.7`.
+
+### Verify
+
+```bash
+# Confirm it is a pre-release and NOT marked latest
+gh release view v0.4.7-dev.N --json isPrerelease,isLatest
+# Expect: {"isPrerelease": true, "isLatest": false}
+
+# Confirm the stable release is still "Latest"
+gh release list --limit 5
+
+# Confirm only the tarball was attached (no .deb/.rpm/AUR)
+gh release view v0.4.7-dev.N --json assets --jq '.assets[].name'
+```
+
+## Hotfix Release
+
+A hotfix ships an urgent patch to the **stable** line while `develop/0.4.7` is in flight.
+Mechanically it is a normal stable patch release, plus a mandatory forward-merge into
+develop so the fix is not lost when the next release ships.
+
+### Release the patch on `main`
+
+Cut the release branch from `main` and run the **Stable Release** golden path with a
+`vX.Y.(Z+1)` version:
+
+```bash
+git checkout main && git pull origin main
+git checkout -b release/X.Y.(Z+1)
+# fix + tests (TDD), bump Cargo.toml to X.Y.(Z+1), update CHANGELOG.md and version.json
+make pre-commit
+```
+
+Then follow the golden path from Step 3: PR `release/X.Y.(Z+1)` → `main`, wait for CI, tag
+`vX.Y.(Z+1)` before merge, let the workflow publish, reconcile asset filenames, merge,
+verify website.
+
+> The release must flow through a `release/*` branch — `website-sync.yml` only fires when
+> the merge commit message contains `release/`. Develop the fix on a `hotfix/*` topic
+> branch first if you like, but land it via a `release/*` PR.
+
+### Forward-merge into develop (required)
+
+Once the fix is merged to `main`, carry it into the unstable line:
+
+```bash
+git checkout develop/0.4.7 && git pull origin develop/0.4.7
+git merge --no-ff main          # bring the stable fix forward
+# Cargo.toml will conflict on `version`: keep develop's 0.4.7-dev.N string, take the
+# fix itself. Re-run cargo update -w if the lockfile needs it.
+make pre-commit
+git push origin develop/0.4.7
+```
+
+> **Why forward-merge, never back-merge.** `main` must stay releasable at any moment.
+> Merging `develop` → `main` would drag unfinished 0.4.7 work into a stable release;
+> merging `main` → `develop` only adds already-shipped, already-tested fixes to the
+> unstable line. Fixes therefore always travel `main` → `develop`, never the reverse.
+
+## Promoting `develop/0.4.7` to Stable
+
+When the unstable line is feature-complete and has progressed through `-rc.N`, promote it
+to a stable release. Promotion goes through a `release/*` branch (not a direct
+`develop` → `main` merge) so `website-sync.yml` — which keys on `release/` in the merge
+commit message — fires correctly.
+
+```bash
+# 1. Ensure every stable fix is forward-merged and develop is green
+git checkout develop/0.4.7 && git pull origin develop/0.4.7
+make pre-commit
+
+# 2. Cut the release branch from develop
+git checkout -b release/0.4.7
+
+# 3. Drop the pre-release suffix and finalize the stable surfaces:
+#    - Cargo.toml: [workspace.package] version = "0.4.7"   (then cargo update -w)
+#    - CHANGELOG.md: move "Unreleased" entries under ## [0.4.7] - YYYY-MM-DD
+#    - version.json: author 0.4.7 metadata + asset filenames (now in play)
+cargo update -w
+make pre-commit
+git add Cargo.toml Cargo.lock CHANGELOG.md version.json
+git commit -m "Release v0.4.7"
+
+# 4. Push and open the promotion PR (base main, head release/0.4.7)
+git push -u origin release/0.4.7
+gh pr create --base main --title "Release v0.4.7" --body "Release v0.4.7"
+```
+
+From here follow the **Stable Release** golden path from Step 4 (tag `v0.4.7` before
+merging, run the release workflow, reconcile assets, merge, verify website). After
+promotion, open the next unstable branch (e.g. `develop/0.5.0`) from `main` for the
+following cycle.
 
 ## Release Workflow Architecture
 
@@ -445,9 +664,9 @@ gh release delete vX.Y.Z --yes
 
 | File | Purpose |
 |------|---------|
-| `.github/workflows/release.yml` | Main release workflow (build, package, publish) |
-| `.github/workflows/website-sync.yml` | Website notification (triggers on release/* merge to main) |
-| `.github/workflows/ci.yml` | PR/push CI checks |
+| `.github/workflows/release.yml` | Main release workflow. Detects pre-release tags (`-dev`/`-alpha`/`-beta`/`-rc`) → GitHub pre-release, tarball only; stable tags → full packaging |
+| `.github/workflows/website-sync.yml` | Website notification (triggers on `release/*` merge to `main` — stable only) |
+| `.github/workflows/ci.yml` | PR/push CI checks (runs on `main` and `develop/**`, push and PR) |
 | `version.json` | Current version metadata for website |
 | `CHANGELOG.md` | Release notes history |
 
