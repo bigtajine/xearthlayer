@@ -32,9 +32,8 @@ use tracing::{debug, trace};
 /// - Real files are passed through directly from the source directory
 /// - DDS textures that don't exist are generated via the async pipeline
 ///
-/// Unlike the `fuser`-based implementation, all operations are async and
-/// run concurrently on the Tokio runtime. This enables parallel processing
-/// of X-Plane's DDS texture requests.
+/// All operations are async and run concurrently on the Tokio runtime,
+/// enabling parallel processing of X-Plane's DDS texture requests.
 ///
 /// # Disk I/O Concurrency
 ///

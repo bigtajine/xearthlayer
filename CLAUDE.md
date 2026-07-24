@@ -228,7 +228,7 @@ Uses **Web Mercator** (Slippy Map) projection:
 
 All FUSE operations run asynchronously via fuse3, enabling true parallel
 processing of X-Plane's concurrent DDS requests. CPU utilization improved
-from ~6% (single-threaded fuser) to ~45% during scene loading.
+from ~6% to ~45% during scene loading.
 
 ### Concurrency Limiting
 
