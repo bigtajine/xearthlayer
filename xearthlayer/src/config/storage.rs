@@ -203,16 +203,13 @@ fn detect_storage_type(path: &Path) -> Option<DiskIoProfile> {
         Err(e) => {
             debug!("Failed to get metadata for {:?}: {}", path, e);
             // Try parent directory if path doesn't exist yet
-            if let Some(parent) = path.parent() {
-                match fs::metadata(parent) {
-                    Ok(m) => m,
-                    Err(e) => {
-                        debug!("Failed to get metadata for parent {:?}: {}", parent, e);
-                        return None;
-                    }
+            let parent = path.parent()?;
+            match fs::metadata(parent) {
+                Ok(m) => m,
+                Err(e) => {
+                    debug!("Failed to get metadata for parent {:?}: {}", parent, e);
+                    return None;
                 }
-            } else {
-                return None;
             }
         }
     };

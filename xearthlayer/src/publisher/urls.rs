@@ -166,7 +166,7 @@ impl UrlVerifier {
                             "checksum mismatch: expected {}, got {}",
                             expected_checksum,
                             // Show first 16 chars for brevity
-                            &accessibility.content_length.map_or("???".to_string(), |_| {
+                            accessibility.content_length.map_or("???".to_string(), |_| {
                                 format!(
                                     "{}...",
                                     &expected_checksum[..16.min(expected_checksum.len())]
