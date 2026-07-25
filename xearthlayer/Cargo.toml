@@ -18,9 +18,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "local-time"] }
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 tracing-appender = "0.2"
-# FUSE libraries - fuse3 is the active implementation (async multi-threaded)
-# fuser is retained for legacy type definitions but not used at runtime
-fuser = "0.14"
+# FUSE library - fuse3 is the active implementation (async multi-threaded)
 # Temporary fork: samsoir/fuse3 `master` = upstream + configurable-background
 # (max_background/congestion_threshold) plus macOS reply-resilience and mount-option
 # fixes. Required for 0.5.x (macOS support) until these patches ship on crates.io;
