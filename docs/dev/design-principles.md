@@ -257,13 +257,13 @@ xearthlayer-cli (main.rs)
     ↓ (depends on)
 xearthlayer (lib.rs)
     ↓ (uses)
-fuser, reqwest, tokio, image, etc.
+fuse3, reqwest, tokio, image, etc.
 
 xearthlayer-gtk (main.rs)
     ↓ (depends on)
 xearthlayer (lib.rs) + gtk4
     ↓ (uses)
-fuser, reqwest, tokio, image, gtk4, etc.
+fuse3, reqwest, tokio, image, gtk4, etc.
 ```
 
 The library crate is always the source of truth for functionality. Binaries are thin wrappers that provide user interaction.
