@@ -201,6 +201,17 @@ lint-fix: ## Run clippy and automatically fix issues
 verify: format-check lint test-strict ## Run all verification checks (format, lint, test)
 	@echo "$(GREEN)All verification checks passed!$(NC)"
 
+.PHONY: verify-macos
+verify-macos: ## Full macOS verification: verify + live macFUSE smoke tests (macOS only)
+	@if [ "$$(uname -s)" != "Darwin" ]; then \
+		echo "$(RED)Error: verify-macos must be run on macOS$(NC)"; exit 1; fi
+	@if [ ! -d /Library/Filesystems/macfuse.fs ]; then \
+		echo "$(RED)Error: macFUSE not installed. See docs/macos.md$(NC)"; exit 1; fi
+	@$(MAKE) verify
+	@echo "$(BLUE)Running macFUSE smoke tests...$(NC)"
+	RUST_BACKTRACE=$(RUST_BACKTRACE) $(CARGO) test -p xearthlayer --test macfuse_smoke -- --ignored --nocapture
+	@echo "$(GREEN)macOS verification complete!$(NC)"
+
 .PHONY: pre-commit
 pre-commit: verify ## Run pre-commit checks (format-check + lint + test)
 	@echo "$(GREEN)Pre-commit checks passed! Ready to commit.$(NC)"
