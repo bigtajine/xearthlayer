@@ -16,6 +16,10 @@
       "filename": "xearthlayer-v0.4.6-x86_64-linux.tar.gz",
       "description": "Linux binary tarball"
     },
+    "macos_tarball": {
+      "filename": "xearthlayer-v0.4.6-arm64-macos.tar.gz",
+      "description": "macOS (Apple Silicon) binary tarball"
+    },
     "aur": {
       "filename": "aur-package.zip",
       "description": "Arch Linux AUR package"

@@ -432,21 +432,47 @@ pkg-all: pkg-deb pkg-tarball ## Build all packages (deb + tarball)
 version: ## Show current version
 	@echo "$(BLUE)Current version:$(NC) $(PKG_VERSION)"
 
+# Pre-release suffix (e.g. `-dev.0`) stripped for RPM and PKGBUILD, whose version
+# fields cannot represent it: RPM uses `-` to delimit Version from Release, and
+# Arch `pkgver` forbids hyphens. This is the same constraint that makes
+# release.yml gate .deb/.rpm/AUR to stable tags. For a stable VERSION the two
+# forms are identical, so this is a no-op on the stable path.
+BASE_VERSION = $(firstword $(subst -, ,$(VERSION)))
+
 .PHONY: bump-version
-bump-version: ## Bump version across all files (VERSION=x.y.z)
-	@if [ -z "$(VERSION)" ]; then echo "$(RED)Error: VERSION is required. Usage: make bump-version VERSION=0.3.0$(NC)"; exit 1; fi
-	@echo "$(BLUE)Bumping version to $(VERSION)...$(NC)"
-	@# Update workspace Cargo.toml
-	@sed -i 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml
-	@# Update RPM spec file
-	@sed -i 's/^Version:.*/Version:        $(VERSION)/' pkg/rpm/xearthlayer.spec
+bump-version: ## Bump version across all files (VERSION=x.y.z or x.y.z-dev.N)
+	@if [ -z "$(VERSION)" ]; then echo "$(RED)Error: VERSION is required. Usage: make bump-version VERSION=0.5.0-dev.1$(NC)"; exit 1; fi
+	@command -v jq >/dev/null 2>&1 || { echo "$(RED)Error: jq not found. Install jq to update version.json$(NC)"; exit 1; }
+	@echo "$(BLUE)Bumping version to $(VERSION) (packaging base: $(BASE_VERSION))...$(NC)"
+	@# Workspace Cargo.toml — full semver.
+	@# `cat tmp > file` rather than in-place sed: portable across GNU and BSD sed,
+	@# and preserves the original file's inode and permissions.
+	@sed 's/^version = ".*"/version = "$(VERSION)"/' Cargo.toml > Cargo.toml.tmp \
+		&& cat Cargo.toml.tmp > Cargo.toml && rm -f Cargo.toml.tmp
+	@# RPM spec — base version only.
+	@sed 's/^Version:.*/Version:        $(BASE_VERSION)/' pkg/rpm/xearthlayer.spec > pkg/rpm/xearthlayer.spec.tmp \
+		&& cat pkg/rpm/xearthlayer.spec.tmp > pkg/rpm/xearthlayer.spec && rm -f pkg/rpm/xearthlayer.spec.tmp
+	@# Arch PKGBUILD — base version only.
+	@sed 's/^pkgver=.*/pkgver=$(BASE_VERSION)/' pkg/arch/PKGBUILD > pkg/arch/PKGBUILD.tmp \
+		&& cat pkg/arch/PKGBUILD.tmp > pkg/arch/PKGBUILD && rm -f pkg/arch/PKGBUILD.tmp
+	@# version.json — full semver. The Fedora tag (fcNN) in the RPM filename is
+	@# read back from the current value rather than hardcoded: it drifts when CI's
+	@# Fedora base image upgrades, and the runbook has a reconciliation step for it.
+	@FC=$$(jq -r '.assets.rpm.filename' version.json | sed -E 's/.*\.(fc[0-9]+)\..*/\1/'); \
+		jq --arg v "$(VERSION)" --arg fc "$$FC" \
+			'.version = $$v | .tag = "v" + $$v | .download_base_url = "https://github.com/samsoir/xearthlayer/releases/download/v" + $$v | .assets.deb.filename = "xearthlayer_" + $$v + "-1_amd64.deb" | .assets.rpm.filename = "xearthlayer-" + $$v + "-1." + $$fc + ".x86_64.rpm" | .assets.tarball.filename = "xearthlayer-v" + $$v + "-x86_64-linux.tar.gz" | .assets.macos_tarball.filename = "xearthlayer-v" + $$v + "-arm64-macos.tar.gz"' \
+			version.json > version.json.tmp \
+		&& cat version.json.tmp > version.json && rm -f version.json.tmp
+	@# Cargo.lock — refresh the two workspace member entries.
+	@$(CARGO) update --workspace --offline >/dev/null
 	@echo "$(GREEN)Version bumped to $(VERSION)$(NC)"
 	@echo ""
 	@echo "$(YELLOW)Next steps:$(NC)"
-	@echo "  1. Update CHANGELOG.md with release notes"
-	@echo "  2. Commit: git add -A && git commit -m 'Bump version to $(VERSION)'"
-	@echo "  3. Tag: git tag v$(VERSION)"
-	@echo "  4. Push: git push origin HEAD && git push origin v$(VERSION)"
+	@echo "  1. Update version.json release_date (not automated — see below)"
+	@echo "  2. Update CHANGELOG.md with release notes"
+	@echo "  3. Commit: git add -A && git commit -m 'Bump version to $(VERSION)'"
+	@echo "  4. Tag: git tag v$(VERSION)"
+	@echo "  5. Push: git push origin HEAD && git push origin v$(VERSION)"
 
 .PHONY: release-checklist
 release-checklist: ## Show release checklist
