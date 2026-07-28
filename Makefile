@@ -459,6 +459,7 @@ bump-version: ## Bump version across all files (VERSION=x.y.z or x.y.z-dev.N)
 	@# read back from the current value rather than hardcoded: it drifts when CI's
 	@# Fedora base image upgrades, and the runbook has a reconciliation step for it.
 	@FC=$$(jq -r '.assets.rpm.filename' version.json | sed -E 's/.*\.(fc[0-9]+)\..*/\1/'); \
+		case "$$FC" in fc[0-9]*) ;; *) echo "$(RED)Error: could not read Fedora tag (fcNN) from version.json .assets.rpm.filename$(NC)"; exit 1;; esac; \
 		jq --arg v "$(VERSION)" --arg fc "$$FC" \
 			'.version = $$v | .tag = "v" + $$v | .download_base_url = "https://github.com/samsoir/xearthlayer/releases/download/v" + $$v | .assets.deb.filename = "xearthlayer_" + $$v + "-1_amd64.deb" | .assets.rpm.filename = "xearthlayer-" + $$v + "-1." + $$fc + ".x86_64.rpm" | .assets.tarball.filename = "xearthlayer-v" + $$v + "-x86_64-linux.tar.gz" | .assets.macos_tarball.filename = "xearthlayer-v" + $$v + "-arm64-macos.tar.gz"' \
 			version.json > version.json.tmp \
