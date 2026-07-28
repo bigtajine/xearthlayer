@@ -31,12 +31,12 @@ XEarthLayer maintains two long-lived branches, one per release channel:
 | Branch | Channel | Version format | Purpose |
 |--------|---------|----------------|---------|
 | `main` | Stable | `X.Y.Z` (e.g. `0.4.6`) | Production releases — what most users run. |
-| `develop/0.4.7` | Unstable | `X.Y.Z-dev.N` (e.g. `0.4.7-dev.3`) | The next release, including breaking changes. |
+| `develop/0.5.0` | Unstable | `X.Y.Z-dev.N` (e.g. `0.5.0-dev.3`) | The next release, including breaking changes. |
 
 Work branches off — and its PR targets — whichever long-lived branch owns the change:
 
 - **Fixes and small features for the current stable line** target `main`.
-- **Breaking changes and features for the next release** target `develop/0.4.7`.
+- **Breaking changes and features for the next release** target `develop/0.5.0`.
 
 Branch naming (the prefix names the *change*; the base branch selects the *channel*):
 
@@ -46,7 +46,7 @@ Branch naming (the prefix names the *change*; the base branch selects the *chann
 - `chore/<description>` — tooling, docs, maintenance
 
 **Golden rule — fixes flow one way.** Land fixes on `main` first, then forward-merge
-`main` → `develop/0.4.7` to carry them into the unstable line. `develop/0.4.7` is
+`main` → `develop/0.5.0` to carry them into the unstable line. `develop/0.5.0` is
 **never** merged back into `main` until the whole line is promoted as a stable release.
 This keeps `main` releasable at any moment.
 
