@@ -104,8 +104,24 @@ are skipped on every pre-release tag. Jobs that always run are checked with
 
 ## Platform Support Tiers
 
-Linux and macOS are both **Tier 1 — blocking**: a failure blocks PR merge and aborts
-release publication.
+Linux and macOS are both **Tier 1**: a failure is meant to block a PR merge, and does
+abort release publication.
+
+The two halves are enforced by different mechanisms, and only one is live today:
+
+| Gate | Linux (`Verify`) | macOS (`Verify (macOS)`) |
+|------|------------------|--------------------------|
+| Aborts release publication | ✅ live — `publish` requires `package-linux` | ✅ live — `publish` requires `package-macos` |
+| Blocks a PR merge | ✅ live on `main` (required context) | ⏳ pending branch protection |
+
+Release publication is gated for both: `publish` names each packaging job in its
+`needs:` *and* its `if:` expression (see the job graph above). Merge blocking, by
+contrast, is **branch protection** — a repository setting, not a workflow. `main`
+currently requires only the `Verify` context, and `develop/0.5.0` is unprotected, so a
+red `Verify (macOS)` is visible but not merge-blocking. Adding it as a required check
+is deliberately deferred until the macOS port merges: protecting the branch while that
+job is red would block every merge, including the port itself. See
+[Status Checks and Branch Protection](#status-checks-and-branch-protection).
 
 | Platform | Arch | CI runner | Notes |
 |----------|------|-----------|-------|
@@ -168,12 +184,14 @@ Some behaviour is structurally untestable on hosted runners. Know the gaps.
 Silicon requires booting to Recovery, downgrading to Reduced Security, enabling user
 management of kexts, and rebooting. Hosted runners permit none of that.
 
-`xearthlayer/tests/macfuse_smoke.rs` is designed to be `#[ignore]`d for exactly this
-reason: CI **compiles** it — which catches API and type breakage under `-Dwarnings` —
-but never **runs** it. As of this writing that test file does not yet exist on this
+As of this writing, `xearthlayer/tests/macfuse_smoke.rs` does not yet exist on this
 branch; it ships with the macOS port (PR #202, still open against `develop/0.5.0`).
 Until that merges, `make verify-macos`'s final step has no test to run — the platform
 and macFUSE guards ahead of it still work today.
+
+Once present, the test is designed to be `#[ignore]`d for exactly this reason: CI
+**compiles** it — which catches API and type breakage under `-Dwarnings` — but never
+**runs** it, because macFUSE is a kext and hosted runners cannot load one.
 
 **Live FUSE mounts on Linux** are equally uncovered: `make verify` runs
 `cargo test` without `--ignored`, so `#[ignore]`d tests are skipped on both platforms.
