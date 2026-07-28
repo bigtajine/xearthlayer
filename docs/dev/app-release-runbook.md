@@ -7,8 +7,9 @@ This runbook documents the complete workflow for releasing new versions of XEart
 Releases are automated via GitHub Actions when a version tag (`v*`) is pushed. The workflow:
 1. Runs `make verify` (format, lint, test)
 2. Builds the release binary once
-3. Packages for multiple platforms (Linux tarball, Debian, RPM, AUR) — **stable
-   releases only**; pre-release tags ship the Linux tarball alone
+3. Packages for multiple platforms (Linux tarball, macOS tarball, Debian, RPM, AUR) —
+   the Debian/RPM/AUR packages are **stable releases only**; pre-release tags ship the
+   Linux and macOS tarballs alone
 4. Creates a GitHub Release with all assets — a **pre-release** (not marked "Latest")
    for unstable tags (`-dev.N` / `-alpha.N` / `-beta.N` / `-rc.N`), a normal release
    for stable `X.Y.Z` tags
@@ -20,20 +21,24 @@ unstable line on `develop/0.5.0`. The **Stable Release** golden path below is th
 case; **Unstable / Preview Release**, **Hotfix Release**, and **Promoting
 `develop/0.5.0` to Stable** follow it.
 
+> For how the pipeline itself is structured — the job graph, platform tiers, status
+> checks and version propagation — see [CI/CD Pipeline](cicd.md). This runbook is the
+> procedure; that document is the system.
+
 ## Branch Model & Release Channels
 
 XEarthLayer ships on two parallel channels, each anchored to a long-lived branch:
 
 | Channel | Branch | Version | Example | GitHub Release | Assets | version.json / website |
 |---------|--------|---------|---------|----------------|--------|------------------------|
-| **Stable** | `main` | `X.Y.Z` | `0.4.6` | Latest | tarball + `.deb` + `.rpm` + AUR | ✅ updated |
-| **Unstable** | `develop/0.5.0` | `X.Y.Z-dev.N` | `0.5.0-dev.3` | Pre-release (`--latest=false`) | tarball only | ❌ skipped |
+| **Stable** | `main` | `X.Y.Z` | `0.4.6` | Latest | Linux + macOS tarballs + `.deb` + `.rpm` + AUR | ✅ updated |
+| **Unstable** | `develop/0.5.0` | `X.Y.Z-dev.N` | `0.5.0-dev.3` | Pre-release (`--latest=false`) | Linux + macOS tarballs | ❌ skipped |
 
 As the unstable line matures toward release, the pre-release identifier progresses
 `-dev.N` → `-alpha.N` → `-beta.N` → `-rc.N`, and finally drops the suffix when the branch
 is promoted to a stable `X.Y.Z` on `main`. All four pre-release forms are treated
-identically by the release workflow (published as GitHub pre-releases, Linux tarball
-only).
+identically by the release workflow (published as GitHub pre-releases, Linux and macOS
+tarballs only).
 
 ```
 main (stable, v0.4.x)
@@ -91,18 +96,20 @@ make pre-commit
 ### Step 2: Update Version, Changelog, and version.json
 
 ```bash
-# Update workspace version in Cargo.toml
-# Edit: [workspace.package] version = "X.Y.Z"
+# Update every version-carrying file in one step
+make bump-version VERSION=X.Y.Z
+#   Full semver  -> Cargo.toml, Cargo.lock, version.json
+#   Base version -> pkg/rpm/xearthlayer.spec, pkg/arch/PKGBUILD
+#   (RPM and Arch version fields cannot contain a hyphen — see docs/dev/cicd.md)
 
-# Update CHANGELOG.md
-# - Add new version header: ## [X.Y.Z] - YYYY-MM-DD
-# - Document all changes under Added/Changed/Fixed/Removed
-# - Update comparison links at bottom
-
-# Update version.json
-# - version, tag, release_date
-# - Asset filenames (replace old version with X.Y.Z)
-# - download_base_url
+# Then by hand — bump-version deliberately leaves these alone:
+# - version.json: release_date
+#   Leaving it manual keeps `make bump-version VERSION=<current>` a no-op, so
+#   re-running it doubles as a drift check.
+# - CHANGELOG.md:
+#   - Add new version header: ## [X.Y.Z] - YYYY-MM-DD
+#   - Document all changes under Added/Changed/Fixed/Removed
+#   - Update comparison links at bottom
 ```
 
 > **⚠ RPM filename drift:** The RPM asset name embeds the Fedora base image
@@ -160,13 +167,18 @@ gh run watch --repo samsoir/xearthlayer
 
 # Expected jobs (all should succeed):
 # ✓ Verify (~3-4 min)
+# ✓ Verify (macOS) (~10-15 min)
 # ✓ Build Release Binary (~4 min)
 # ✓ Prepare AUR Package (~5 sec)
 # ✓ Build RPM Package (~7-8 min)
 # ✓ Package Linux Binary (~10 sec)
+# ✓ Package macOS Binary (~5-6 min)
 # ✓ Package Debian Package (~1 min)
 # ✓ Publish Release (~15 sec)
 ```
+
+macOS timings are estimates — the runner has fewer cores than `ubuntu-latest`. Replace
+them with measured values after the first `v0.5.0-dev.N` release.
 
 ### Step 6: Reconcile Asset Filenames, Then Merge PR
 
@@ -229,9 +241,9 @@ Added / Changed / Fixed / Removed groups.
 
 Preview releases are cut from `develop/0.5.0` and published as GitHub **pre-releases**.
 They deliberately skip the stable end-user surfaces: no `version.json` change, no website
-notification, no package library, and no `.deb`/`.rpm`/AUR artifacts. Only the Linux
-tarball is published, so testers grab the binary directly from the release. The stable
-line on `main` stays authoritative for everything user-facing.
+notification, no package library, and no `.deb`/`.rpm`/AUR artifacts. Only the Linux and
+macOS tarballs are published, so testers grab the binary directly from the release. The
+stable line on `main` stays authoritative for everything user-facing.
 
 ### What differs from a stable release
 
@@ -239,7 +251,7 @@ line on `main` stays authoritative for everything user-facing.
 |---|--------|---------|
 | Branch | `main` | `develop/0.5.0` |
 | Version | `X.Y.Z` | `X.Y.Z-dev.N` (`-alpha`/`-beta`/`-rc`) |
-| Assets | tarball + `.deb` + `.rpm` + AUR | tarball only |
+| Assets | Linux + macOS tarballs + `.deb` + `.rpm` + AUR | Linux + macOS tarballs |
 | GitHub Release | Latest | Pre-release, `--latest=false` |
 | `version.json` / website | updated | untouched |
 | Release PR / merge | yes (`release/*` → `main`) | none — lives on `develop` |
@@ -287,7 +299,7 @@ gh release view v0.5.0-dev.N --json isPrerelease,isLatest
 # Confirm the stable release is still "Latest"
 gh release list --limit 5
 
-# Confirm only the tarball was attached (no .deb/.rpm/AUR)
+# Confirm only the tarballs were attached (no .deb/.rpm/AUR)
 gh release view v0.5.0-dev.N --json assets --jq '.assets[].name'
 ```
 
@@ -351,12 +363,13 @@ make pre-commit
 git checkout -b release/0.5.0
 
 # 3. Drop the pre-release suffix and finalize the stable surfaces:
-#    - Cargo.toml: [workspace.package] version = "0.5.0"   (then cargo update -w)
+make bump-version VERSION=0.5.0
+#    Then by hand:
+#    - version.json: release_date
 #    - CHANGELOG.md: move "Unreleased" entries under ## [0.5.0] - YYYY-MM-DD
-#    - version.json: author 0.5.0 metadata + asset filenames (now in play)
-cargo update -w
 make pre-commit
-git add Cargo.toml Cargo.lock CHANGELOG.md version.json
+git add Cargo.toml Cargo.lock CHANGELOG.md version.json \
+        pkg/rpm/xearthlayer.spec pkg/arch/PKGBUILD
 git commit -m "Release v0.5.0"
 
 # 4. Push and open the promotion PR (base main, head release/0.5.0)
@@ -628,6 +641,16 @@ Update the comparison links at the bottom of CHANGELOG.md:
 - [ ] `version.json` updated with new version, date, and asset filenames
 - [ ] Release branch created and PR opened
 - [ ] CI passes on PR
+- [ ] **macOS verification (required for stable promotion).** CI compiles the macFUSE
+      smoke tests but cannot run them — macFUSE is a kext and hosted runners cannot
+      load it. A maintainer with Apple Silicon hardware must run:
+
+      ```bash
+      make verify-macos
+      ```
+
+      and post the output on the release PR. See
+      [CI/CD Pipeline](cicd.md#what-ci-cannot-verify) for why this gap exists.
 - [ ] Tag created and pushed (BEFORE merging PR)
 - [ ] Release workflow completes successfully
 - [ ] **Asset filenames reconciled against `version.json`** (RPM `fcNN` drift) — fix on release branch before merge if mismatched
@@ -665,7 +688,7 @@ gh release delete vX.Y.Z --yes
 
 | File | Purpose |
 |------|---------|
-| `.github/workflows/release.yml` | Main release workflow. Detects pre-release tags (`-dev`/`-alpha`/`-beta`/`-rc`) → GitHub pre-release, tarball only; stable tags → full packaging |
+| `.github/workflows/release.yml` | Main release workflow. Detects pre-release tags (`-dev`/`-alpha`/`-beta`/`-rc`) → GitHub pre-release, Linux + macOS tarballs only; stable tags → full packaging |
 | `.github/workflows/website-sync.yml` | Website notification (triggers on `release/*` merge to `main` — stable only) |
 | `.github/workflows/ci.yml` | PR/push CI checks (runs on `main` and `develop/**`, push and PR) |
 | `version.json` | Current version metadata for website |

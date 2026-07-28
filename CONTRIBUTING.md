@@ -70,6 +70,14 @@ The hook skips checks for documentation-only commits (no `.rs`, `.toml`, or `Mak
 
 CI will reject PRs that haven't passed these checks.
 
+**Every PR must pass two status checks:** `Verify` (Linux) and `Verify (macOS)`. Both
+are required by design — macOS is a Tier 1 platform, and every release is gated on both
+passing before publish. You do not need a Mac to contribute; CI builds and verifies
+macOS for you.
+
+See [CI/CD Pipeline](docs/dev/cicd.md) for the full pipeline description, including how
+merge-blocking and release-blocking currently differ per platform.
+
 ### Writing Code
 
 XEarthLayer follows **SOLID principles** and **Test-Driven Development (TDD)**:
