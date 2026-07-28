@@ -141,7 +141,8 @@ make bump-version VERSION=X.Y.Z
 git checkout -b release/X.Y.Z
 
 # Commit changes
-git add Cargo.toml Cargo.lock CHANGELOG.md version.json
+git add Cargo.toml Cargo.lock CHANGELOG.md version.json \
+        pkg/rpm/xearthlayer.spec pkg/arch/PKGBUILD
 git commit -m "Release vX.Y.Z"
 
 # Push and create PR
@@ -272,6 +273,10 @@ git pull origin develop/0.5.0
 #    [workspace.package] version = "0.5.0-dev.N"
 #    (increment N per preview: dev.0, dev.1, …; advance to -alpha/-beta/-rc as the
 #    line matures)
+#    Deliberately hand-edited rather than `make bump-version`: that tool also rewrites
+#    version.json, and previews must leave the stable end-user surfaces untouched.
+#    No drift results — the base version of X.Y.Z-dev.N is X.Y.Z, which the RPM spec
+#    and PKGBUILD already carry.
 cargo update -w
 
 # 3. Record changes under the CHANGELOG "Unreleased" heading (do NOT date a section)
