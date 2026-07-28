@@ -46,22 +46,23 @@ main (stable, v0.4.x)
         ├── feature/* ──PR──▶ develop/0.5.0
         └── ──tag──▶ v0.5.0-dev.N · -alpha.N · -beta.N · -rc.N     # preview
                           │
-        release-ready:    └─ release/0.4.7 ──PR──▶ main ──tag──▶ v0.4.7   # promote
+        release-ready:    └─ release/0.5.0 ──PR──▶ main ──tag──▶ v0.5.0   # promote
 ```
 
 **The one-way rule.** Fixes land on `main` first, then forward-merge into
 `develop/0.5.0`. The develop branch is **never** merged directly back into `main`;
 promotion happens through a `release/*` branch cut from develop (see **Promoting
 `develop/0.5.0` to Stable**). This keeps `main` releasable at any moment without dragging
-unfinished 0.4.7 work into a stable release.
+unfinished 0.5.0 work into a stable release.
 
-> **Version collision when develop targets the next patch.** `develop/0.5.0` reserves
-> `0.4.7` for its own promotion. Because that is the *immediate* next number, an urgent
-> **Hotfix Release** cut from `main` cannot also be `0.4.7`. If a hotfix must ship before
-> the develop line promotes, give it the next patch (`0.4.7` → the hotfix becomes the
-> stable release and develop re-targets `0.4.8`), or fold the fix into the develop line
-> and promote once. Reserve a develop line for a further-out minor (e.g. `develop/0.5.0`)
-> when you expect stable patches to keep flowing in parallel.
+> **Version collision when a develop line targets the next patch.** If the unstable
+> branch reserves the *immediate* next patch number — say `develop/0.4.7` while `main`
+> sits at `0.4.6` — an urgent **Hotfix Release** cut from `main` cannot claim that
+> number too. Either give the hotfix the next patch and re-target the develop line
+> (the hotfix ships `0.4.7`, develop moves to `0.4.8`), or fold the fix into the
+> develop line and promote once. The current line sidesteps this by targeting a
+> further-out minor: `develop/0.5.0` promotes to `v0.5.0`, leaving `v0.4.7` free for
+> a stable hotfix off `main`.
 
 ## Prerequisites
 
@@ -330,7 +331,7 @@ git push origin develop/0.5.0
 ```
 
 > **Why forward-merge, never back-merge.** `main` must stay releasable at any moment.
-> Merging `develop` → `main` would drag unfinished 0.4.7 work into a stable release;
+> Merging `develop` → `main` would drag unfinished 0.5.0 work into a stable release;
 > merging `main` → `develop` only adds already-shipped, already-tested fixes to the
 > unstable line. Fixes therefore always travel `main` → `develop`, never the reverse.
 
@@ -347,25 +348,25 @@ git checkout develop/0.5.0 && git pull origin develop/0.5.0
 make pre-commit
 
 # 2. Cut the release branch from develop
-git checkout -b release/0.4.7
+git checkout -b release/0.5.0
 
 # 3. Drop the pre-release suffix and finalize the stable surfaces:
-#    - Cargo.toml: [workspace.package] version = "0.4.7"   (then cargo update -w)
-#    - CHANGELOG.md: move "Unreleased" entries under ## [0.4.7] - YYYY-MM-DD
-#    - version.json: author 0.4.7 metadata + asset filenames (now in play)
+#    - Cargo.toml: [workspace.package] version = "0.5.0"   (then cargo update -w)
+#    - CHANGELOG.md: move "Unreleased" entries under ## [0.5.0] - YYYY-MM-DD
+#    - version.json: author 0.5.0 metadata + asset filenames (now in play)
 cargo update -w
 make pre-commit
 git add Cargo.toml Cargo.lock CHANGELOG.md version.json
-git commit -m "Release v0.4.7"
+git commit -m "Release v0.5.0"
 
-# 4. Push and open the promotion PR (base main, head release/0.4.7)
-git push -u origin release/0.4.7
-gh pr create --base main --title "Release v0.4.7" --body "Release v0.4.7"
+# 4. Push and open the promotion PR (base main, head release/0.5.0)
+git push -u origin release/0.5.0
+gh pr create --base main --title "Release v0.5.0" --body "Release v0.5.0"
 ```
 
-From here follow the **Stable Release** golden path from Step 4 (tag `v0.4.7` before
+From here follow the **Stable Release** golden path from Step 4 (tag `v0.5.0` before
 merging, run the release workflow, reconcile assets, merge, verify website). After
-promotion, open the next unstable branch (e.g. `develop/0.5.0`) from `main` for the
+promotion, open the next unstable branch (e.g. `develop/0.6.0`) from `main` for the
 following cycle.
 
 ## Release Workflow Architecture
