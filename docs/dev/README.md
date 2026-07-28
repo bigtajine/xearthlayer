@@ -33,6 +33,7 @@ Technical documentation for XEarthLayer developers and contributors.
 | [Scenery Packages](scenery-packages.md) | File formats, naming conventions, metadata specs |
 | [Package Manager Design](package-manager-design.md) | Download, install, update architecture (parallel downloads, retry) |
 | [Package Publisher Design](package-publisher-design.md) | Build, archive, release pipeline |
+| [CI/CD Pipeline](cicd.md) | Build pipeline, merge strategy, release channels, platform tiers |
 | [GitHub Releases Publishing](github-releases-publishing.md) | Multi-part upload workflow |
 | [Zoom Level Overlap](zoom-level-overlap-design.md) | Dedupe and gap analysis tools |
 
