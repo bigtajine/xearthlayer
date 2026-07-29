@@ -209,7 +209,7 @@ verify-macos: ## Full macOS verification: verify + live macFUSE smoke tests (mac
 		echo "$(RED)Error: macFUSE not installed. See docs/macos.md$(NC)"; exit 1; fi
 	@$(MAKE) verify
 	@echo "$(BLUE)Running macFUSE smoke tests...$(NC)"
-	RUST_BACKTRACE=$(RUST_BACKTRACE) $(CARGO) test -p xearthlayer --test macfuse_smoke -- --ignored --nocapture
+	RUST_BACKTRACE=$(RUST_BACKTRACE) RUSTFLAGS="$(STRICT_RUSTFLAGS)" $(CARGO) test -p xearthlayer --test macfuse_smoke -- --ignored --nocapture
 	@echo "$(GREEN)macOS verification complete!$(NC)"
 
 .PHONY: pre-commit
@@ -443,6 +443,10 @@ BASE_VERSION = $(firstword $(subst -, ,$(VERSION)))
 bump-version: ## Bump version across all files (VERSION=x.y.z or x.y.z-dev.N)
 	@if [ -z "$(VERSION)" ]; then echo "$(RED)Error: VERSION is required. Usage: make bump-version VERSION=0.5.0-dev.1$(NC)"; exit 1; fi
 	@command -v jq >/dev/null 2>&1 || { echo "$(RED)Error: jq not found. Install jq to update version.json$(NC)"; exit 1; }
+	@# Validate the Fedora tag BEFORE writing anything — a mid-recipe abort would
+	@# leave a half-bumped tree, which is the drift this target exists to prevent.
+	@FC=$$(jq -r '.assets.rpm.filename' version.json | sed -E 's/.*\.(fc[0-9]+)\..*/\1/'); \
+		case "$$FC" in fc[0-9]*) ;; *) echo "$(RED)Error: could not read Fedora tag (fcNN) from version.json .assets.rpm.filename$(NC)"; exit 1;; esac
 	@echo "$(BLUE)Bumping version to $(VERSION) (packaging base: $(BASE_VERSION))...$(NC)"
 	@# Workspace Cargo.toml — full semver.
 	@# `cat tmp > file` rather than in-place sed: portable across GNU and BSD sed,
@@ -458,10 +462,11 @@ bump-version: ## Bump version across all files (VERSION=x.y.z or x.y.z-dev.N)
 	@# version.json — full semver. The Fedora tag (fcNN) in the RPM filename is
 	@# read back from the current value rather than hardcoded: it drifts when CI's
 	@# Fedora base image upgrades, and the runbook has a reconciliation step for it.
+	@# Already validated above, before any file was written; re-extract here since
+	@# each recipe line runs in its own shell.
 	@FC=$$(jq -r '.assets.rpm.filename' version.json | sed -E 's/.*\.(fc[0-9]+)\..*/\1/'); \
-		case "$$FC" in fc[0-9]*) ;; *) echo "$(RED)Error: could not read Fedora tag (fcNN) from version.json .assets.rpm.filename$(NC)"; exit 1;; esac; \
 		jq --arg v "$(VERSION)" --arg fc "$$FC" \
-			'.version = $$v | .tag = "v" + $$v | .download_base_url = "https://github.com/samsoir/xearthlayer/releases/download/v" + $$v | .assets.deb.filename = "xearthlayer_" + $$v + "-1_amd64.deb" | .assets.rpm.filename = "xearthlayer-" + $$v + "-1." + $$fc + ".x86_64.rpm" | .assets.tarball.filename = "xearthlayer-v" + $$v + "-x86_64-linux.tar.gz" | .assets.macos_tarball.filename = "xearthlayer-v" + $$v + "-arm64-macos.tar.gz"' \
+			'.version = $$v | .tag = "v" + $$v | .download_base_url = "https://github.com/samsoir/xearthlayer/releases/download/v" + $$v | .assets.deb.filename = "xearthlayer_" + $$v + "-1_amd64.deb" | .assets.rpm.filename = "xearthlayer-" + $$v + "-1." + $$fc + ".x86_64.rpm" | .assets.tarball.filename = "xearthlayer-v" + $$v + "-x86_64-linux.tar.gz" | .assets.macos_tarball = {filename: ("xearthlayer-v" + $$v + "-arm64-macos.tar.gz"), description: "macOS (Apple Silicon) binary tarball"}' \
 			version.json > version.json.tmp \
 		&& cat version.json.tmp > version.json && rm -f version.json.tmp
 	@# Cargo.lock — refresh the two workspace member entries.

@@ -73,6 +73,7 @@ unfinished 0.5.0 work into a stable release.
 
 - Write access to the repository
 - `gh` CLI authenticated (`gh auth status`)
+- `jq` installed — `make bump-version` hard-fails without it
 - Clean working tree on the branch you're releasing from — `main` for a stable release or
   hotfix, `develop/0.5.0` for an unstable preview
 
@@ -322,7 +323,9 @@ Cut the release branch from `main` and run the **Stable Release** golden path wi
 ```bash
 git checkout main && git pull origin main
 git checkout -b release/X.Y.(Z+1)
-# fix + tests (TDD), bump Cargo.toml to X.Y.(Z+1), update CHANGELOG.md and version.json
+# fix + tests (TDD), then:
+#   make bump-version VERSION=X.Y.(Z+1)
+#   by hand: version.json release_date, and the CHANGELOG entry
 make pre-commit
 ```
 
@@ -343,6 +346,11 @@ git checkout develop/0.5.0 && git pull origin develop/0.5.0
 git merge --no-ff main          # bring the stable fix forward
 # Cargo.toml will conflict on `version`: keep develop's 0.5.0-dev.N string, take the
 # fix itself. Re-run cargo update -w if the lockfile needs it.
+# version.json, pkg/rpm/xearthlayer.spec and pkg/arch/PKGBUILD will also conflict —
+# main carries older stable version numbers than develop's -dev.N line. Resolution
+# rule: keep develop's side for every version-carrying file; the incoming stable
+# versions are older and would regress develop's packaging files. This self-heals at
+# promotion, when `make bump-version` rewrites all five version-carrying files.
 make pre-commit
 git push origin develop/0.5.0
 ```
@@ -389,40 +397,8 @@ following cycle.
 
 ## Release Workflow Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Release Workflow Pipeline                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Tag Push (vX.Y.Z)                                                      │
-│        │                                                                │
-│        ▼                                                                │
-│  ┌─────────────┐                                                        │
-│  │   Verify    │ ◄── Gate: format, lint, test                          │
-│  └─────────────┘                                                        │
-│        │                                                                │
-│        ▼                                                                │
-│  ┌─────────────────┐                                                    │
-│  │  Build Binary   │ ◄── Single build, reused by packaging jobs        │
-│  └─────────────────┘                                                    │
-│        │                                                                │
-│        ├──────────────┬───────────────┬──────────────┐                  │
-│        ▼              ▼               ▼              ▼                  │
-│  ┌──────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐             │
-│  │  Linux   │  │  Debian   │  │    RPM    │  │    AUR    │             │
-│  │ Tarball  │  │  Package  │  │  Package  │  │  Package  │             │
-│  └──────────┘  └───────────┘  └───────────┘  └───────────┘             │
-│        │              │               │              │                  │
-│        └──────────────┴───────────────┴──────────────┘                  │
-│                              │                                          │
-│                              ▼                                          │
-│                     ┌────────────────┐                                  │
-│                     │ Publish Release│ ◄── Upload assets, update        │
-│                     │                │     version.json, notify website │
-│                     └────────────────┘                                  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+See [CI/CD Pipeline — The Release Job Graph](cicd.md#the-release-job-graph) for the
+job dependency graph and the `publish` gate, kept in step with the workflow itself.
 
 ## Troubleshooting
 
@@ -641,19 +617,14 @@ Update the comparison links at the bottom of CHANGELOG.md:
 
 - [ ] Working tree clean, on `main`, up to date
 - [ ] `make pre-commit` passes
-- [ ] Version updated in `Cargo.toml`
+- [ ] `make bump-version VERSION=X.Y.Z` run — updates `Cargo.toml`, `Cargo.lock`, `version.json`, `pkg/rpm/xearthlayer.spec`, `pkg/arch/PKGBUILD`
+- [ ] `version.json` `release_date` set by hand (`bump-version` deliberately leaves it)
 - [ ] CHANGELOG.md updated with all changes
-- [ ] `version.json` updated with new version, date, and asset filenames
 - [ ] Release branch created and PR opened
 - [ ] CI passes on PR
 - [ ] **macOS verification (required for stable promotion).** CI compiles the macFUSE
       smoke tests but cannot run them — macFUSE is a kext and hosted runners cannot
-      load it. A maintainer with Apple Silicon hardware must run:
-
-      ```bash
-      make verify-macos
-      ```
-
+      load it. A maintainer with Apple Silicon hardware must run `make verify-macos`
       and post the output on the release PR. See
       [CI/CD Pipeline](cicd.md#what-ci-cannot-verify) for why this gap exists.
 - [ ] Tag created and pushed (BEFORE merging PR)

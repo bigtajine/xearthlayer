@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **macOS (Apple Silicon) release tarball** ([#201](https://github.com/samsoir/xearthlayer/issues/201)): Releases now ship `xearthlayer-<tag>-arm64-macos.tar.gz` on both the stable and pre-release channels. CI gained a blocking `Verify (macOS)` job on `macos-15`, and a macOS packaging failure aborts release publication. The binary is unsigned, so first run needs `xattr -dr com.apple.quarantine ./xearthlayer`. Usable once the macOS port lands.
+
+- **`make verify-macos`**: Runs `make verify` plus the live macFUSE smoke tests that CI structurally cannot execute — macFUSE is a kernel extension and hosted runners cannot load one. Required before promoting a release to stable.
+
+- **`docs/dev/cicd.md`**: Reference for the build pipeline and merge strategy — branch model, release job graph, platform support tiers, release channels, status checks, and version propagation.
+
+### Fixed
+
+- **`make bump-version` was broken on macOS and covered only two files**: it used GNU-only `sed -i`, and updated only `Cargo.toml` and `pkg/rpm/xearthlayer.spec`. It now uses a portable in-place rewrite and updates all five version-carrying files — `Cargo.toml`, `Cargo.lock` and `version.json` get the full semver, while `pkg/rpm/xearthlayer.spec` and `pkg/arch/PKGBUILD` get the hyphen-stripped base version, since RPM and Arch version fields cannot contain a hyphen. That missing coverage is why the RPM spec had drifted to `0.2.5` and the PKGBUILD to `0.2.0`; both are now correct.
+
 ## [0.4.6] - 2026-05-10
 
 ### Added

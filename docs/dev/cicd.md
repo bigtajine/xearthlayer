@@ -236,6 +236,11 @@ make bump-version VERSION=$(grep '^version' Cargo.toml | cut -d'"' -f2)
 git diff --stat   # empty == all layers agree
 ```
 
+On `develop`, the preview-release path (see the runbook's **Unstable / Preview
+Release**) deliberately hand-edits only `Cargo.toml`, so `version.json` intentionally
+lags behind it between preview bumps — the drift check is therefore meaningful on
+`main` and on `release/*` branches, not on `develop` itself.
+
 **Why drift used to go unnoticed.** `release.yml` rewrites the RPM `Version:` at build
 time and generates the AUR `PKGBUILD` from a heredoc, ignoring `pkg/arch/PKGBUILD`
 entirely. Both files are inert in CI while remaining live in the Makefile path — so
