@@ -53,6 +53,7 @@ Technical documentation for XEarthLayer developers and contributors.
 |----------|-------------|
 | [Debug Map](debug-map.md) | Live browser map for prefetch observability (`--features debug-map`) |
 | [Memory Profiling](memory-profiling.md) | Heaptrack profiling guide for memory optimization |
+| [CI/CD Pipeline](cicd.md) | Build pipeline, merge strategy, release channels, platform tiers |
 | [Application Release Runbook](app-release-runbook.md) | Release workflow, versioning, and troubleshooting |
 
 ## Root Cause Analysis

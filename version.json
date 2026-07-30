@@ -1,25 +1,29 @@
 {
-  "version": "0.4.6",
-  "tag": "v0.4.6",
-  "release_date": "2026-05-10",
+  "version": "0.5.0-dev.0",
+  "tag": "v0.5.0-dev.0",
+  "release_date": "2026-07-27",
   "homepage": "https://xearthlayer.app",
   "assets": {
     "deb": {
-      "filename": "xearthlayer_0.4.6-1_amd64.deb",
+      "filename": "xearthlayer_0.5.0-dev.0-1_amd64.deb",
       "description": "Debian/Ubuntu package"
     },
     "rpm": {
-      "filename": "xearthlayer-0.4.6-1.fc44.x86_64.rpm",
+      "filename": "xearthlayer-0.5.0-dev.0-1.fc44.x86_64.rpm",
       "description": "Fedora/RHEL package"
     },
     "tarball": {
-      "filename": "xearthlayer-v0.4.6-x86_64-linux.tar.gz",
+      "filename": "xearthlayer-v0.5.0-dev.0-x86_64-linux.tar.gz",
       "description": "Linux binary tarball"
+    },
+    "macos_tarball": {
+      "filename": "xearthlayer-v0.5.0-dev.0-arm64-macos.tar.gz",
+      "description": "macOS (Apple Silicon) binary tarball"
     },
     "aur": {
       "filename": "aur-package.zip",
       "description": "Arch Linux AUR package"
     }
   },
-  "download_base_url": "https://github.com/samsoir/xearthlayer/releases/download/v0.4.6"
+  "download_base_url": "https://github.com/samsoir/xearthlayer/releases/download/v0.5.0-dev.0"
 }

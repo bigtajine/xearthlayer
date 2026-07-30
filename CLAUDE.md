@@ -381,6 +381,9 @@ make verify         # Format + lint + test
 cargo test          # Direct cargo test
 ```
 
+On macOS, `make verify-macos` additionally runs the live macFUSE smoke tests that CI
+cannot execute (macFUSE is a kext; hosted runners cannot load it).
+
 ### Building
 
 ```bash
@@ -404,6 +407,11 @@ This ensures:
 CI will fail if pre-commit checks were not run.
 
 **Exception**: For documentation-only changes (`.md`, `.txt`, or other static files that don't affect compilation), `make pre-commit` is not required.
+
+**Platform CI**: PRs run `Verify` (Linux, `ubuntu-latest`) and `Verify (macOS)`
+(Apple Silicon, `macos-15`). Both are blocking. Do not convert the `verify` job to a
+matrix — `main`'s branch protection requires the exact status context `Verify`, and
+matrix jobs are renamed.
 
 ### Key Crates Used
 
@@ -446,5 +454,6 @@ CI will fail if pre-commit checks were not run.
 - Zoom level overlap management: `docs/dev/zoom-level-overlap-design.md` (dedupe, gap analysis)
 - **Consolidated FUSE mounting**: `docs/dev/consolidated-mounting-design.md` (single ortho mount, patches + packages)
 - **GeoIndex design**: `docs/dev/geo-index-design.md` (geospatial reference database, patch region ownership)
+- **CI/CD pipeline**: `docs/dev/cicd.md` (branch model, release job graph, platform tiers, version propagation)
 - memorize review allow(dead_code) macros at major checkpoints. Refactor aggresively to remove them when appropriate.
 - memorize ensure to update the projects documentation to reflect the current state of the project before committing changes

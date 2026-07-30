@@ -7,8 +7,9 @@ This runbook documents the complete workflow for releasing new versions of XEart
 Releases are automated via GitHub Actions when a version tag (`v*`) is pushed. The workflow:
 1. Runs `make verify` (format, lint, test)
 2. Builds the release binary once
-3. Packages for multiple platforms (Linux tarball, Debian, RPM, AUR) — **stable
-   releases only**; pre-release tags ship the Linux tarball alone
+3. Packages for multiple platforms (Linux tarball, macOS tarball, Debian, RPM, AUR) —
+   the Debian/RPM/AUR packages are **stable releases only**; pre-release tags ship the
+   Linux and macOS tarballs alone
 4. Creates a GitHub Release with all assets — a **pre-release** (not marked "Latest")
    for unstable tags (`-dev.N` / `-alpha.N` / `-beta.N` / `-rc.N`), a normal release
    for stable `X.Y.Z` tags
@@ -16,9 +17,13 @@ Releases are automated via GitHub Actions when a version tag (`v*`) is pushed. T
    `website-sync.yml` reads `version.json` and notifies the website
 
 XEarthLayer runs two release channels in parallel — a stable line on `main` and an
-unstable line on `develop/0.4.7`. The **Stable Release** golden path below is the common
+unstable line on `develop/0.5.0`. The **Stable Release** golden path below is the common
 case; **Unstable / Preview Release**, **Hotfix Release**, and **Promoting
-`develop/0.4.7` to Stable** follow it.
+`develop/0.5.0` to Stable** follow it.
+
+> For how the pipeline itself is structured — the job graph, platform tiers, status
+> checks and version propagation — see [CI/CD Pipeline](cicd.md). This runbook is the
+> procedure; that document is the system.
 
 ## Branch Model & Release Channels
 
@@ -26,14 +31,14 @@ XEarthLayer ships on two parallel channels, each anchored to a long-lived branch
 
 | Channel | Branch | Version | Example | GitHub Release | Assets | version.json / website |
 |---------|--------|---------|---------|----------------|--------|------------------------|
-| **Stable** | `main` | `X.Y.Z` | `0.4.6` | Latest | tarball + `.deb` + `.rpm` + AUR | ✅ updated |
-| **Unstable** | `develop/0.4.7` | `X.Y.Z-dev.N` | `0.4.7-dev.3` | Pre-release (`--latest=false`) | tarball only | ❌ skipped |
+| **Stable** | `main` | `X.Y.Z` | `0.4.6` | Latest | Linux + macOS tarballs + `.deb` + `.rpm` + AUR | ✅ updated |
+| **Unstable** | `develop/0.5.0` | `X.Y.Z-dev.N` | `0.5.0-dev.3` | Pre-release (`--latest=false`) | Linux + macOS tarballs | ❌ skipped |
 
 As the unstable line matures toward release, the pre-release identifier progresses
 `-dev.N` → `-alpha.N` → `-beta.N` → `-rc.N`, and finally drops the suffix when the branch
 is promoted to a stable `X.Y.Z` on `main`. All four pre-release forms are treated
-identically by the release workflow (published as GitHub pre-releases, Linux tarball
-only).
+identically by the release workflow (published as GitHub pre-releases, Linux and macOS
+tarballs only).
 
 ```
 main (stable, v0.4.x)
@@ -42,38 +47,40 @@ main (stable, v0.4.x)
   │                       │
   │                       └──────────── merge forward ───────────┐
   │                                                               ▼
-  └── develop/0.4.7 (unstable, long-lived) ◀──────────────────────┘
-        ├── feature/* ──PR──▶ develop/0.4.7
-        └── ──tag──▶ v0.4.7-dev.N · -alpha.N · -beta.N · -rc.N     # preview
+  └── develop/0.5.0 (unstable, long-lived) ◀──────────────────────┘
+        ├── feature/* ──PR──▶ develop/0.5.0
+        └── ──tag──▶ v0.5.0-dev.N · -alpha.N · -beta.N · -rc.N     # preview
                           │
-        release-ready:    └─ release/0.4.7 ──PR──▶ main ──tag──▶ v0.4.7   # promote
+        release-ready:    └─ release/0.5.0 ──PR──▶ main ──tag──▶ v0.5.0   # promote
 ```
 
 **The one-way rule.** Fixes land on `main` first, then forward-merge into
-`develop/0.4.7`. The develop branch is **never** merged directly back into `main`;
+`develop/0.5.0`. The develop branch is **never** merged directly back into `main`;
 promotion happens through a `release/*` branch cut from develop (see **Promoting
-`develop/0.4.7` to Stable**). This keeps `main` releasable at any moment without dragging
-unfinished 0.4.7 work into a stable release.
+`develop/0.5.0` to Stable**). This keeps `main` releasable at any moment without dragging
+unfinished 0.5.0 work into a stable release.
 
-> **Version collision when develop targets the next patch.** `develop/0.4.7` reserves
-> `0.4.7` for its own promotion. Because that is the *immediate* next number, an urgent
-> **Hotfix Release** cut from `main` cannot also be `0.4.7`. If a hotfix must ship before
-> the develop line promotes, give it the next patch (`0.4.7` → the hotfix becomes the
-> stable release and develop re-targets `0.4.8`), or fold the fix into the develop line
-> and promote once. Reserve a develop line for a further-out minor (e.g. `develop/0.5.0`)
-> when you expect stable patches to keep flowing in parallel.
+> **Version collision when a develop line targets the next patch.** If the unstable
+> branch reserves the *immediate* next patch number — say `develop/0.4.7` while `main`
+> sits at `0.4.6` — an urgent **Hotfix Release** cut from `main` cannot claim that
+> number too. Either give the hotfix the next patch and re-target the develop line
+> (the hotfix ships `0.4.7`, develop moves to `0.4.8`), or fold the fix into the
+> develop line and promote once. The current line sidesteps this by targeting a
+> further-out minor: `develop/0.5.0` promotes to `v0.5.0`, leaving `v0.4.7` free for
+> a stable hotfix off `main`.
 
 ## Prerequisites
 
 - Write access to the repository
 - `gh` CLI authenticated (`gh auth status`)
+- `jq` installed — `make bump-version` hard-fails without it
 - Clean working tree on the branch you're releasing from — `main` for a stable release or
-  hotfix, `develop/0.4.7` for an unstable preview
+  hotfix, `develop/0.5.0` for an unstable preview
 
 ## Stable Release (Golden Path)
 
 > This is the standard path: a stable `X.Y.Z` release cut from `main`. For an unstable
-> preview from `develop/0.4.7`, see **Unstable / Preview Release**; for an urgent fix to
+> preview from `develop/0.5.0`, see **Unstable / Preview Release**; for an urgent fix to
 > the stable line, see **Hotfix Release**.
 
 ### Step 1: Prepare the Release
@@ -90,18 +97,20 @@ make pre-commit
 ### Step 2: Update Version, Changelog, and version.json
 
 ```bash
-# Update workspace version in Cargo.toml
-# Edit: [workspace.package] version = "X.Y.Z"
+# Update every version-carrying file in one step
+make bump-version VERSION=X.Y.Z
+#   Full semver  -> Cargo.toml, Cargo.lock, version.json
+#   Base version -> pkg/rpm/xearthlayer.spec, pkg/arch/PKGBUILD
+#   (RPM and Arch version fields cannot contain a hyphen — see docs/dev/cicd.md)
 
-# Update CHANGELOG.md
-# - Add new version header: ## [X.Y.Z] - YYYY-MM-DD
-# - Document all changes under Added/Changed/Fixed/Removed
-# - Update comparison links at bottom
-
-# Update version.json
-# - version, tag, release_date
-# - Asset filenames (replace old version with X.Y.Z)
-# - download_base_url
+# Then by hand — bump-version deliberately leaves these alone:
+# - version.json: release_date
+#   Leaving it manual keeps `make bump-version VERSION=<current>` a no-op, so
+#   re-running it doubles as a drift check.
+# - CHANGELOG.md:
+#   - Add new version header: ## [X.Y.Z] - YYYY-MM-DD
+#   - Document all changes under Added/Changed/Fixed/Removed
+#   - Update comparison links at bottom
 ```
 
 > **⚠ RPM filename drift:** The RPM asset name embeds the Fedora base image
@@ -133,7 +142,8 @@ make pre-commit
 git checkout -b release/X.Y.Z
 
 # Commit changes
-git add Cargo.toml Cargo.lock CHANGELOG.md version.json
+git add Cargo.toml Cargo.lock CHANGELOG.md version.json \
+        pkg/rpm/xearthlayer.spec pkg/arch/PKGBUILD
 git commit -m "Release vX.Y.Z"
 
 # Push and create PR
@@ -159,13 +169,18 @@ gh run watch --repo samsoir/xearthlayer
 
 # Expected jobs (all should succeed):
 # ✓ Verify (~3-4 min)
+# ✓ Verify (macOS) (~10-15 min)
 # ✓ Build Release Binary (~4 min)
 # ✓ Prepare AUR Package (~5 sec)
 # ✓ Build RPM Package (~7-8 min)
 # ✓ Package Linux Binary (~10 sec)
+# ✓ Package macOS Binary (~5-6 min)
 # ✓ Package Debian Package (~1 min)
 # ✓ Publish Release (~15 sec)
 ```
+
+macOS timings are estimates — the runner has fewer cores than `ubuntu-latest`. Replace
+them with measured values after the first `v0.5.0-dev.N` release.
 
 ### Step 6: Reconcile Asset Filenames, Then Merge PR
 
@@ -214,7 +229,7 @@ curl -s https://xearthlayer.app | grep -o 'v[0-9]\+\.[0-9]\+\.[0-9]\+'
 
 `CHANGELOG.md` keeps a single `## [Unreleased]` section at the top ([Keep a
 Changelog](https://keepachangelog.com/) format). **All** merged changes are recorded
-there as they land — on `main` or on `develop/0.4.7` — under the usual
+there as they land — on `main` or on `develop/0.5.0` — under the usual
 Added / Changed / Fixed / Removed groups.
 
 - Entries accumulate under `## [Unreleased]` throughout a development cycle.
@@ -226,19 +241,19 @@ Added / Changed / Fixed / Removed groups.
 
 ## Unstable / Preview Release
 
-Preview releases are cut from `develop/0.4.7` and published as GitHub **pre-releases**.
+Preview releases are cut from `develop/0.5.0` and published as GitHub **pre-releases**.
 They deliberately skip the stable end-user surfaces: no `version.json` change, no website
-notification, no package library, and no `.deb`/`.rpm`/AUR artifacts. Only the Linux
-tarball is published, so testers grab the binary directly from the release. The stable
-line on `main` stays authoritative for everything user-facing.
+notification, no package library, and no `.deb`/`.rpm`/AUR artifacts. Only the Linux and
+macOS tarballs are published, so testers grab the binary directly from the release. The
+stable line on `main` stays authoritative for everything user-facing.
 
 ### What differs from a stable release
 
 | | Stable | Preview |
 |---|--------|---------|
-| Branch | `main` | `develop/0.4.7` |
+| Branch | `main` | `develop/0.5.0` |
 | Version | `X.Y.Z` | `X.Y.Z-dev.N` (`-alpha`/`-beta`/`-rc`) |
-| Assets | tarball + `.deb` + `.rpm` + AUR | tarball only |
+| Assets | Linux + macOS tarballs + `.deb` + `.rpm` + AUR | Linux + macOS tarballs |
 | GitHub Release | Latest | Pre-release, `--latest=false` |
 | `version.json` / website | updated | untouched |
 | Release PR / merge | yes (`release/*` → `main`) | none — lives on `develop` |
@@ -252,13 +267,17 @@ the `.deb`/`.rpm`/AUR jobs. `website-sync.yml` never fires because it only trigg
 
 ```bash
 # 1. On develop, ensure it's current (stable fixes forward-merged in — see Hotfix)
-git checkout develop/0.4.7
-git pull origin develop/0.4.7
+git checkout develop/0.5.0
+git pull origin develop/0.5.0
 
 # 2. Bump the pre-release identifier in Cargo.toml, then sync the lockfile
-#    [workspace.package] version = "0.4.7-dev.N"
+#    [workspace.package] version = "0.5.0-dev.N"
 #    (increment N per preview: dev.0, dev.1, …; advance to -alpha/-beta/-rc as the
 #    line matures)
+#    Deliberately hand-edited rather than `make bump-version`: that tool also rewrites
+#    version.json, and previews must leave the stable end-user surfaces untouched.
+#    No drift results — the base version of X.Y.Z-dev.N is X.Y.Z, which the RPM spec
+#    and PKGBUILD already carry.
 cargo update -w
 
 # 3. Record changes under the CHANGELOG "Unreleased" heading (do NOT date a section)
@@ -266,33 +285,33 @@ cargo update -w
 # 4. Verify, commit, and push on develop
 make pre-commit
 git add Cargo.toml Cargo.lock CHANGELOG.md
-git commit -m "chore(release): 0.4.7-dev.N"
-git push origin develop/0.4.7
+git commit -m "chore(release): 0.5.0-dev.N"
+git push origin develop/0.5.0
 
 # 5. Tag from develop and push — this triggers the release workflow
-git tag v0.4.7-dev.N
-git push origin v0.4.7-dev.N
+git tag v0.5.0-dev.N
+git push origin v0.5.0-dev.N
 ```
 
-There is no release PR and no merge step: the preview lives entirely on `develop/0.4.7`.
+There is no release PR and no merge step: the preview lives entirely on `develop/0.5.0`.
 
 ### Verify
 
 ```bash
 # Confirm it is a pre-release and NOT marked latest
-gh release view v0.4.7-dev.N --json isPrerelease,isLatest
+gh release view v0.5.0-dev.N --json isPrerelease,isLatest
 # Expect: {"isPrerelease": true, "isLatest": false}
 
 # Confirm the stable release is still "Latest"
 gh release list --limit 5
 
-# Confirm only the tarball was attached (no .deb/.rpm/AUR)
-gh release view v0.4.7-dev.N --json assets --jq '.assets[].name'
+# Confirm only the tarballs were attached (no .deb/.rpm/AUR)
+gh release view v0.5.0-dev.N --json assets --jq '.assets[].name'
 ```
 
 ## Hotfix Release
 
-A hotfix ships an urgent patch to the **stable** line while `develop/0.4.7` is in flight.
+A hotfix ships an urgent patch to the **stable** line while `develop/0.5.0` is in flight.
 Mechanically it is a normal stable patch release, plus a mandatory forward-merge into
 develop so the fix is not lost when the next release ships.
 
@@ -304,7 +323,9 @@ Cut the release branch from `main` and run the **Stable Release** golden path wi
 ```bash
 git checkout main && git pull origin main
 git checkout -b release/X.Y.(Z+1)
-# fix + tests (TDD), bump Cargo.toml to X.Y.(Z+1), update CHANGELOG.md and version.json
+# fix + tests (TDD), then:
+#   make bump-version VERSION=X.Y.(Z+1)
+#   by hand: version.json release_date, and the CHANGELOG entry
 make pre-commit
 ```
 
@@ -321,20 +342,25 @@ verify website.
 Once the fix is merged to `main`, carry it into the unstable line:
 
 ```bash
-git checkout develop/0.4.7 && git pull origin develop/0.4.7
+git checkout develop/0.5.0 && git pull origin develop/0.5.0
 git merge --no-ff main          # bring the stable fix forward
-# Cargo.toml will conflict on `version`: keep develop's 0.4.7-dev.N string, take the
+# Cargo.toml will conflict on `version`: keep develop's 0.5.0-dev.N string, take the
 # fix itself. Re-run cargo update -w if the lockfile needs it.
+# version.json, pkg/rpm/xearthlayer.spec and pkg/arch/PKGBUILD will also conflict —
+# main carries older stable version numbers than develop's -dev.N line. Resolution
+# rule: keep develop's side for every version-carrying file; the incoming stable
+# versions are older and would regress develop's packaging files. This self-heals at
+# promotion, when `make bump-version` rewrites all five version-carrying files.
 make pre-commit
-git push origin develop/0.4.7
+git push origin develop/0.5.0
 ```
 
 > **Why forward-merge, never back-merge.** `main` must stay releasable at any moment.
-> Merging `develop` → `main` would drag unfinished 0.4.7 work into a stable release;
+> Merging `develop` → `main` would drag unfinished 0.5.0 work into a stable release;
 > merging `main` → `develop` only adds already-shipped, already-tested fixes to the
 > unstable line. Fixes therefore always travel `main` → `develop`, never the reverse.
 
-## Promoting `develop/0.4.7` to Stable
+## Promoting `develop/0.5.0` to Stable
 
 When the unstable line is feature-complete and has progressed through `-rc.N`, promote it
 to a stable release. Promotion goes through a `release/*` branch (not a direct
@@ -343,67 +369,36 @@ commit message — fires correctly.
 
 ```bash
 # 1. Ensure every stable fix is forward-merged and develop is green
-git checkout develop/0.4.7 && git pull origin develop/0.4.7
+git checkout develop/0.5.0 && git pull origin develop/0.5.0
 make pre-commit
 
 # 2. Cut the release branch from develop
-git checkout -b release/0.4.7
+git checkout -b release/0.5.0
 
 # 3. Drop the pre-release suffix and finalize the stable surfaces:
-#    - Cargo.toml: [workspace.package] version = "0.4.7"   (then cargo update -w)
-#    - CHANGELOG.md: move "Unreleased" entries under ## [0.4.7] - YYYY-MM-DD
-#    - version.json: author 0.4.7 metadata + asset filenames (now in play)
-cargo update -w
+make bump-version VERSION=0.5.0
+#    Then by hand:
+#    - version.json: release_date
+#    - CHANGELOG.md: move "Unreleased" entries under ## [0.5.0] - YYYY-MM-DD
 make pre-commit
-git add Cargo.toml Cargo.lock CHANGELOG.md version.json
-git commit -m "Release v0.4.7"
+git add Cargo.toml Cargo.lock CHANGELOG.md version.json \
+        pkg/rpm/xearthlayer.spec pkg/arch/PKGBUILD
+git commit -m "Release v0.5.0"
 
-# 4. Push and open the promotion PR (base main, head release/0.4.7)
-git push -u origin release/0.4.7
-gh pr create --base main --title "Release v0.4.7" --body "Release v0.4.7"
+# 4. Push and open the promotion PR (base main, head release/0.5.0)
+git push -u origin release/0.5.0
+gh pr create --base main --title "Release v0.5.0" --body "Release v0.5.0"
 ```
 
-From here follow the **Stable Release** golden path from Step 4 (tag `v0.4.7` before
+From here follow the **Stable Release** golden path from Step 4 (tag `v0.5.0` before
 merging, run the release workflow, reconcile assets, merge, verify website). After
-promotion, open the next unstable branch (e.g. `develop/0.5.0`) from `main` for the
+promotion, open the next unstable branch (e.g. `develop/0.6.0`) from `main` for the
 following cycle.
 
 ## Release Workflow Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        Release Workflow Pipeline                         │
-├─────────────────────────────────────────────────────────────────────────┤
-│                                                                         │
-│  Tag Push (vX.Y.Z)                                                      │
-│        │                                                                │
-│        ▼                                                                │
-│  ┌─────────────┐                                                        │
-│  │   Verify    │ ◄── Gate: format, lint, test                          │
-│  └─────────────┘                                                        │
-│        │                                                                │
-│        ▼                                                                │
-│  ┌─────────────────┐                                                    │
-│  │  Build Binary   │ ◄── Single build, reused by packaging jobs        │
-│  └─────────────────┘                                                    │
-│        │                                                                │
-│        ├──────────────┬───────────────┬──────────────┐                  │
-│        ▼              ▼               ▼              ▼                  │
-│  ┌──────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐             │
-│  │  Linux   │  │  Debian   │  │    RPM    │  │    AUR    │             │
-│  │ Tarball  │  │  Package  │  │  Package  │  │  Package  │             │
-│  └──────────┘  └───────────┘  └───────────┘  └───────────┘             │
-│        │              │               │              │                  │
-│        └──────────────┴───────────────┴──────────────┘                  │
-│                              │                                          │
-│                              ▼                                          │
-│                     ┌────────────────┐                                  │
-│                     │ Publish Release│ ◄── Upload assets, update        │
-│                     │                │     version.json, notify website │
-│                     └────────────────┘                                  │
-│                                                                         │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+See [CI/CD Pipeline — The Release Job Graph](cicd.md#the-release-job-graph) for the
+job dependency graph and the `publish` gate, kept in step with the workflow itself.
 
 ## Troubleshooting
 
@@ -622,11 +617,16 @@ Update the comparison links at the bottom of CHANGELOG.md:
 
 - [ ] Working tree clean, on `main`, up to date
 - [ ] `make pre-commit` passes
-- [ ] Version updated in `Cargo.toml`
+- [ ] `make bump-version VERSION=X.Y.Z` run — updates `Cargo.toml`, `Cargo.lock`, `version.json`, `pkg/rpm/xearthlayer.spec`, `pkg/arch/PKGBUILD`
+- [ ] `version.json` `release_date` set by hand (`bump-version` deliberately leaves it)
 - [ ] CHANGELOG.md updated with all changes
-- [ ] `version.json` updated with new version, date, and asset filenames
 - [ ] Release branch created and PR opened
 - [ ] CI passes on PR
+- [ ] **macOS verification (required for stable promotion).** CI compiles the macFUSE
+      smoke tests but cannot run them — macFUSE is a kext and hosted runners cannot
+      load it. A maintainer with Apple Silicon hardware must run `make verify-macos`
+      and post the output on the release PR. See
+      [CI/CD Pipeline](cicd.md#what-ci-cannot-verify) for why this gap exists.
 - [ ] Tag created and pushed (BEFORE merging PR)
 - [ ] Release workflow completes successfully
 - [ ] **Asset filenames reconciled against `version.json`** (RPM `fcNN` drift) — fix on release branch before merge if mismatched
@@ -664,7 +664,7 @@ gh release delete vX.Y.Z --yes
 
 | File | Purpose |
 |------|---------|
-| `.github/workflows/release.yml` | Main release workflow. Detects pre-release tags (`-dev`/`-alpha`/`-beta`/`-rc`) → GitHub pre-release, tarball only; stable tags → full packaging |
+| `.github/workflows/release.yml` | Main release workflow. Detects pre-release tags (`-dev`/`-alpha`/`-beta`/`-rc`) → GitHub pre-release, Linux + macOS tarballs only; stable tags → full packaging |
 | `.github/workflows/website-sync.yml` | Website notification (triggers on `release/*` merge to `main` — stable only) |
 | `.github/workflows/ci.yml` | PR/push CI checks (runs on `main` and `develop/**`, push and PR) |
 | `version.json` | Current version metadata for website |
