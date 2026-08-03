@@ -342,14 +342,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn detect_total_memory_reads_real_ram_on_macos() {
-        // Exercises the sysctl call end to end. Any real Mac has at least the
-        // 8GB fallback worth of RAM, so this both confirms it doesn't panic and
-        // that we get a plausible value rather than a parse failure.
-        let mem = detect_total_memory();
-        assert!(
-            mem >= fallback_memory(),
-            "should detect at least the fallback worth of RAM, got {mem}"
-        );
+        // Exercise the sysctl path via the failure-surfacing variant: a sysctl
+        // failure is None here, not the 8GB fallback, so this test cannot pass
+        // by failing. The floor is 2GB rather than the fallback because CI
+        // runners are macOS hosts with less than 8GB (macos-15 has 7GB).
+        let mem = try_detect_total_memory().expect("sysctl hw.memsize should succeed on macOS");
+        assert!(mem >= 2 * GB, "detected RAM implausibly low: {mem}");
     }
 
     #[test]
