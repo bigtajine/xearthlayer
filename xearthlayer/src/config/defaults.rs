@@ -278,8 +278,10 @@ pub const DEFAULT_CONTROL_PLANE_SEMAPHORE_TIMEOUT_SECS: u64 = 30;
 // Texture defaults
 // =============================================================================
 
-/// Default mipmap count (5 levels: 4096 → 2048 → 1024 → 512 → 256).
-pub const DEFAULT_MIPMAP_COUNT: usize = 5;
+// There is deliberately no default mipmap count: the chain length is derived
+// from the texture dimensions at encode time via
+// `MipmapGenerator::full_chain_count()`. A constant silently produces a wrong
+// chain for any texture size it was not written for.
 
 /// Default texture compressor backend: ISPC SIMD.
 pub const DEFAULT_COMPRESSOR: &str = "ispc";

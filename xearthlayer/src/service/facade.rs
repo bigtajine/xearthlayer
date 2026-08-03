@@ -627,7 +627,7 @@ mod tests {
         let config = ServiceConfig::default();
         assert!(config.cache_enabled());
         assert_eq!(config.texture().format(), DdsFormat::BC1);
-        assert_eq!(config.texture().mipmap_count(), 5);
+        assert_eq!(config.texture().mipmap_count(), None);
     }
 
     #[test]

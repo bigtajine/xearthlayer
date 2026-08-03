@@ -652,8 +652,8 @@ mod tests {
         let data = fs.request_dds_impl(&coords).await;
 
         // Timeout should return placeholder
-        // Placeholder is 4096×4096 BC1 with 5 mipmaps = 11,174,016 bytes
-        assert_eq!(data.len(), 11_174_016);
+        // Placeholder is 4096×4096 BC1 with the full 13-level chain
+        assert_eq!(data.len(), crate::fuse::EXPECTED_DDS_SIZE);
         assert_eq!(&data[0..4], b"DDS "); // Valid DDS magic
     }
 }
