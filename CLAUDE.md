@@ -143,7 +143,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - `StateAggregator` - Combines multiple position sources with accuracy-based selection
     - `PositionModel` - Persistent position model refined by best available data
     - `WebApiAdapter` - Connects to X-Plane Web API (REST + WebSocket) for position and sim state
-    - `InferenceAdapter` - Position inference from FUSE file access patterns
+    - `InferenceAdapter` - Position inference from FUSE file access patterns (macOS caveat: virtual DDS files use the kernel page cache there, so FUSE only sees cold first-reads — steady-state position tracking is effectively Web API-only; see `docs/dev/fuse-filesystem.md`)
     - `FlightPathHistory` - Position history for track derivation
     - Position sources: Web API (10m), ManualReference (100m), SceneInference (100km)
     - Higher accuracy wins; stale high-accuracy can be beaten by fresh lower-accuracy
@@ -439,8 +439,8 @@ matrix jobs are renamed.
 ## Platform Support
 
 - **Linux**: ✅ Fully working (native FUSE)
+- **macOS**: ✅ Working (requires [macFUSE](https://macfuse.io); Apple Silicon tested; fuse3 pinned to `samsoir/fuse3` `master` (upstream + `configurable-background` plus the macOS reply-resilience patch — upstream PR [Sherlock-Holo/fuse3#137](https://github.com/Sherlock-Holo/fuse3/pull/137) — comma-joined mount options, and reply-drop log demotion); install/approval guide in `docs/macos.md`)
 - **Windows**: ⏳ Planned (requires Dokan/WinFSP)
-- **macOS**: ⏳ Planned (requires macFUSE)
 
 ## References
 

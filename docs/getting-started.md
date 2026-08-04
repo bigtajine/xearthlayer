@@ -16,7 +16,7 @@ See [How It Works](how-it-works.md) for a detailed architectural explanation.
 ## Prerequisites
 
 - **X-Plane 12** (X-Plane 11 may work but is untested)
-- **Linux** (Windows and macOS support planned)
+- **Linux** with FUSE support, or **macOS** with [macFUSE](https://macfuse.io) — see the [macOS guide](macos.md) (Windows support planned)
 - **Internet connection** for streaming imagery
 - Basic familiarity with the command line
 

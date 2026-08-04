@@ -57,11 +57,23 @@ impl CliError {
             CliError::Serve(_) => {
                 eprintln!();
                 eprintln!("Common issues:");
-                eprintln!("  1. FUSE not installed: sudo apt install fuse (Linux)");
-                eprintln!("  2. Permissions: You may need to add your user to 'fuse' group");
-                eprintln!(
-                    "  3. Mountpoint in use: Try unmounting with: fusermount -u <mountpoint>"
-                );
+                #[cfg(target_os = "macos")]
+                {
+                    eprintln!("  1. macFUSE not installed: download from https://macfuse.io");
+                    eprintln!(
+                        "  2. macFUSE not approved: allow it under System Settings > \
+                         Privacy & Security, then restart"
+                    );
+                    eprintln!("  3. Stale mount from a previous run: umount \"<mountpoint>\"");
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    eprintln!("  1. FUSE not installed: sudo apt install fuse (Linux)");
+                    eprintln!("  2. Permissions: You may need to add your user to 'fuse' group");
+                    eprintln!(
+                        "  3. Mountpoint in use: Try unmounting with: fusermount -u <mountpoint>"
+                    );
+                }
             }
             CliError::Publish(_) => {
                 eprintln!();

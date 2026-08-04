@@ -37,7 +37,7 @@
 //! missing textures dynamically using its configured imagery provider.
 
 use super::inode::InodeManager;
-use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL};
+use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL, VIRTUAL_DDS_OPEN_FLAGS};
 use super::types::{Fuse3Error, Fuse3Result};
 use crate::executor::{DdsClient, StorageConcurrencyLimiter};
 use crate::fuse::coalesce::RequestCoalescer;
@@ -63,16 +63,6 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, Instrument};
-
-/// FUSE open flag: bypass kernel page cache for this file.
-///
-/// From `linux/fuse.h`: `#define FOPEN_DIRECT_IO (1 << 0)`
-///
-/// When set in `ReplyOpen::flags`, the kernel sends every `read()` through
-/// the FUSE handler instead of serving from its page cache. Used for virtual
-/// DDS files so that `FuseLoadMonitor`, `SceneTracker`, and `DdsAccessEvent`
-/// see every X-Plane read.
-const FOPEN_DIRECT_IO: u32 = 1;
 
 /// Consolidated ortho union FUSE filesystem.
 ///
@@ -973,12 +963,13 @@ impl Filesystem for Fuse3OrthoUnionFS {
 
     async fn open(&self, _req: Request, inode: u64, _flags: u32) -> Fuse3InternalResult<ReplyOpen> {
         if InodeManager::is_virtual_inode(inode) {
-            // Virtual DDS files: bypass kernel page cache so every read()
-            // goes through our FUSE handler. This ensures FuseLoadMonitor,
-            // SceneTracker, and DdsAccessEvent see all X-Plane reads.
+            // Virtual DDS files. On Linux, direct I/O routes every read through
+            // our handler (load monitor / scene tracker). On macOS that breaks
+            // X-Plane's mmap-based texture loader, so we use the page cache
+            // there instead. See VIRTUAL_DDS_OPEN_FLAGS.
             Ok(ReplyOpen {
                 fh: 0,
-                flags: FOPEN_DIRECT_IO,
+                flags: VIRTUAL_DDS_OPEN_FLAGS,
             })
         } else {
             // Real passthrough files: use default kernel caching
@@ -1857,7 +1848,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_open_virtual_dds_returns_direct_io() {
-        use super::FOPEN_DIRECT_IO;
+        use super::VIRTUAL_DDS_OPEN_FLAGS;
         use fuse3::raw::Filesystem;
 
         let temp = TempDir::new().unwrap();
@@ -1887,8 +1878,9 @@ mod tests {
         let reply = result.expect("open on virtual DDS inode should succeed");
         assert_eq!(reply.fh, 0, "file handle should be stateless");
         assert_eq!(
-            reply.flags, FOPEN_DIRECT_IO,
-            "virtual DDS files should have FOPEN_DIRECT_IO flag"
+            reply.flags, VIRTUAL_DDS_OPEN_FLAGS,
+            "virtual DDS files should use the platform's virtual-DDS open flags \
+             (direct I/O on Linux, page cache on macOS for mmap compatibility)"
         );
     }
 

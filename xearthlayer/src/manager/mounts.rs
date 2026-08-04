@@ -408,6 +408,13 @@ impl MountManager {
             "Built consolidated ortho union index"
         );
 
+        // A previous run that died hard (crash, SIGKILL, system sleep) can
+        // leave a stale FUSE mount on the mountpoint; mounting over it fails
+        // (macFUSE: ENXIO "Device not configured"). A stale mount also makes
+        // exists() report false, so recovery must happen before the directory
+        // check below.
+        crate::system::recover_stale_fuse_mount(&mountpoint);
+
         // Create mountpoint directory
         if !mountpoint.exists() {
             if let Err(e) = std::fs::create_dir_all(&mountpoint) {

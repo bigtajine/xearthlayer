@@ -32,6 +32,37 @@ use crate::fuse::{get_default_placeholder, validate_dds_or_placeholder, DdsFilen
 /// This value is shared across all filesystem implementations.
 pub const TTL: Duration = Duration::from_secs(1);
 
+/// FUSE open flag: bypass kernel page cache for this file.
+///
+/// From `linux/fuse.h`: `#define FOPEN_DIRECT_IO (1 << 0)`
+///
+/// When set in `ReplyOpen::flags`, the kernel sends every `read()` through
+/// the FUSE handler instead of serving from its page cache. Used for virtual
+/// DDS files so that `FuseLoadMonitor`, `SceneTracker`, and `DdsAccessEvent`
+/// see every X-Plane read.
+///
+/// Only referenced on Linux (macOS serves virtual DDS through the page cache —
+/// see [`VIRTUAL_DDS_OPEN_FLAGS`]), so it is dead code on macOS.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub const FOPEN_DIRECT_IO: u32 = 1;
+
+/// Open flags reported for virtual DDS files, shared by every fuse3 filesystem.
+///
+/// On Linux we set [`FOPEN_DIRECT_IO`] so every `read()` reaches our handler
+/// (feeding the load monitor / scene tracker). On **macOS we must not**:
+/// X-Plane memory-maps texture files, and macFUSE faults with `EXC_BAD_ACCESS`
+/// when a `direct_io` file is `mmap`ed — `mmap` needs the page cache that
+/// `direct_io` bypasses. So macOS serves DDS through the page cache (flags 0),
+/// trading per-read tracking for not crashing the sim's texture loader.
+///
+/// This is the single source of truth: both [`Fuse3PassthroughFS`](super::Fuse3PassthroughFS)
+/// and [`Fuse3OrthoUnionFS`](super::Fuse3OrthoUnionFS) report it from `open()`,
+/// so the macOS mmap-safety rule cannot drift between filesystems.
+#[cfg(not(target_os = "macos"))]
+pub const VIRTUAL_DDS_OPEN_FLAGS: u32 = FOPEN_DIRECT_IO;
+#[cfg(target_os = "macos")]
+pub const VIRTUAL_DDS_OPEN_FLAGS: u32 = 0;
+
 // =============================================================================
 // VirtualDdsConfig - Shared DDS file configuration
 // =============================================================================
@@ -140,6 +171,12 @@ pub trait FileAttrBuilder {
             gid: metadata.gid(),
             rdev: metadata.rdev() as u32,
             blksize: 4096,
+            // macFUSE's FileAttr carries the macOS-only creation time and
+            // BSD file flags. Mirror ctime for crtime; we expose no flags.
+            #[cfg(target_os = "macos")]
+            crtime: UNIX_EPOCH.into(),
+            #[cfg(target_os = "macos")]
+            flags: 0,
         }
     }
 
@@ -169,6 +206,10 @@ pub trait FileAttrBuilder {
             gid: unsafe { libc::getgid() },
             rdev: 0,
             blksize: config.blksize(),
+            #[cfg(target_os = "macos")]
+            crtime: now,
+            #[cfg(target_os = "macos")]
+            flags: 0,
         }
     }
 
@@ -190,6 +231,10 @@ pub trait FileAttrBuilder {
             gid: unsafe { libc::getgid() },
             rdev: 0,
             blksize: 4096,
+            #[cfg(target_os = "macos")]
+            crtime: now,
+            #[cfg(target_os = "macos")]
+            flags: 0,
         }
     }
 
@@ -215,6 +260,10 @@ pub trait FileAttrBuilder {
             gid: unsafe { libc::getgid() },
             rdev: 0,
             blksize: 4096,
+            #[cfg(target_os = "macos")]
+            crtime: now,
+            #[cfg(target_os = "macos")]
+            flags: 0,
         }
     }
 }

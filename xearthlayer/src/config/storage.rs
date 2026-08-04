@@ -24,7 +24,7 @@
 use std::path::Path;
 use tracing::debug;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use tracing::warn;
 
 // =============================================================================
@@ -156,12 +156,21 @@ impl DiskIoProfile {
     ///
     /// On detection failure, falls back to `Ssd`.
     pub fn resolve_for_path(&self, path: &Path) -> Self {
+        self.try_resolve_for_path(path).unwrap_or_else(|| {
+            debug!("Storage detection failed, defaulting to SSD profile");
+            Self::Ssd
+        })
+    }
+
+    /// Detect the appropriate profile for the given path, surfacing failure.
+    ///
+    /// Like [`resolve_for_path`](Self::resolve_for_path) but returns `None`
+    /// when `self` is `Auto` and detection fails, so callers (e.g. the setup
+    /// wizard) can tell a detected profile from a fallback guess.
+    pub fn try_resolve_for_path(&self, path: &Path) -> Option<Self> {
         match self {
-            Self::Auto => detect_storage_type(path).unwrap_or_else(|| {
-                debug!("Storage detection failed, defaulting to SSD profile");
-                Self::Ssd
-            }),
-            other => *other,
+            Self::Auto => detect_storage_type(path),
+            other => Some(*other),
         }
     }
 }
@@ -329,14 +338,176 @@ fn check_device_match(device_name: &str, major: u32, minor: u32) -> bool {
     false
 }
 
-/// Fallback for non-Linux platforms - always returns None.
-#[cfg(not(target_os = "linux"))]
+/// Detect the storage type for the given path on macOS.
+///
+/// macOS has no `/sys/block`. We resolve the cache path to its backing device
+/// node with `df`, then ask `diskutil info` whether that device is solid state
+/// and over what protocol, mapping the result to a [`DiskIoProfile`]. Returns
+/// `None` (caller falls back to SSD) if any step fails or the device can't be
+/// classified.
+#[cfg(target_os = "macos")]
+fn detect_storage_type(path: &Path) -> Option<DiskIoProfile> {
+    let existing = nearest_existing_ancestor(path)?;
+    let df_out = run_command("df", &[existing.to_str()?])?;
+    let device = parse_df_device(&df_out)?;
+    debug!("Path {:?} is backed by device {}", path, device);
+
+    let info = run_command("diskutil", &["info", &device])?;
+    let profile = classify_diskutil_info(&info);
+    debug!("diskutil classified {} as {:?}", device, profile);
+    profile
+}
+
+/// Walk up from `path` to the nearest ancestor that exists.
+///
+/// The cache directory may not exist yet during setup, but `df` needs a real
+/// path. The filesystem of the nearest existing ancestor is the same one the
+/// cache will live on, so it answers the storage-type question correctly.
+#[cfg(target_os = "macos")]
+fn nearest_existing_ancestor(path: &Path) -> Option<std::path::PathBuf> {
+    let mut probe: Option<&Path> = Some(path);
+    while let Some(p) = probe {
+        if p.exists() {
+            return Some(p.to_path_buf());
+        }
+        probe = p.parent();
+    }
+    None
+}
+
+/// Run a command and return its stdout as a string, or `None` on failure.
+#[cfg(target_os = "macos")]
+fn run_command(cmd: &str, args: &[&str]) -> Option<String> {
+    use std::process::Command;
+
+    let output = Command::new(cmd).args(args).output().ok()?;
+    if !output.status.success() {
+        debug!("`{} {}` failed", cmd, args.join(" "));
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Extract the `/dev/...` device node from `df <path>` output.
+///
+/// Pure function (no I/O) so the parsing is unit-testable. `df` prints a header
+/// line followed by one data line whose first column is the device node, e.g.
+/// `/dev/disk3s5`. Returns `None` if there is no data line or it isn't a device.
+#[cfg(target_os = "macos")]
+fn parse_df_device(df_output: &str) -> Option<String> {
+    df_output
+        .lines()
+        .nth(1)? // skip the header row
+        .split_whitespace()
+        .next()
+        .filter(|dev| dev.starts_with("/dev/"))
+        .map(|dev| dev.to_string())
+}
+
+/// Map `diskutil info <device>` output to a [`DiskIoProfile`].
+///
+/// Pure function (no I/O) so the classification is unit-testable. Keys on two
+/// fields:
+/// - `Solid State: No`  → [`DiskIoProfile::Hdd`]
+/// - `Solid State: Yes` over a PCI / Apple Fabric / NVMe protocol → [`DiskIoProfile::Nvme`]
+/// - `Solid State: Yes` over any other protocol (SATA, USB, …) → [`DiskIoProfile::Ssd`]
+///
+/// Returns `None` if the `Solid State` field is absent, so the caller falls
+/// back to the safe SSD default rather than guessing.
+#[cfg(target_os = "macos")]
+fn classify_diskutil_info(info: &str) -> Option<DiskIoProfile> {
+    let field = |name: &str| {
+        info.lines().find_map(|line| {
+            line.split_once(':')
+                .filter(|(key, _)| key.trim() == name)
+                .map(|(_, value)| value.trim())
+        })
+    };
+
+    if field("Solid State")?.eq_ignore_ascii_case("No") {
+        return Some(DiskIoProfile::Hdd);
+    }
+
+    // Solid state: distinguish NVMe-class from SATA by the bus protocol.
+    let protocol = field("Protocol").unwrap_or("").to_ascii_lowercase();
+    if protocol.contains("pci") || protocol.contains("apple fabric") || protocol.contains("nvme") {
+        Some(DiskIoProfile::Nvme)
+    } else {
+        Some(DiskIoProfile::Ssd)
+    }
+}
+
+/// Fallback for unsupported platforms - always returns None.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn detect_storage_type(path: &Path) -> Option<DiskIoProfile> {
     warn!(
         "Storage type detection not supported on this platform, using default profile for {:?}",
         path
     );
     None
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod macos_storage_tests {
+    use super::*;
+
+    #[test]
+    fn classify_apple_fabric_ssd_as_nvme() {
+        // Apple Silicon internal storage.
+        let info =
+            "   Protocol:                  Apple Fabric\n   Solid State:               Yes\n";
+        assert_eq!(classify_diskutil_info(info), Some(DiskIoProfile::Nvme));
+    }
+
+    #[test]
+    fn classify_pci_express_ssd_as_nvme() {
+        // Intel Mac internal NVMe.
+        let info = "   Protocol:                  PCI-Express\n   Solid State:               Yes\n";
+        assert_eq!(classify_diskutil_info(info), Some(DiskIoProfile::Nvme));
+    }
+
+    #[test]
+    fn classify_sata_ssd_as_ssd() {
+        let info = "   Protocol:                  SATA\n   Solid State:               Yes\n";
+        assert_eq!(classify_diskutil_info(info), Some(DiskIoProfile::Ssd));
+    }
+
+    #[test]
+    fn classify_spinning_disk_as_hdd() {
+        let info = "   Protocol:                  USB\n   Solid State:               No\n";
+        assert_eq!(classify_diskutil_info(info), Some(DiskIoProfile::Hdd));
+    }
+
+    #[test]
+    fn classify_missing_solid_state_field_is_none() {
+        let info = "   Protocol:                  USB\n   Device Node:   /dev/disk9\n";
+        assert_eq!(classify_diskutil_info(info), None);
+    }
+
+    #[test]
+    fn parse_df_device_extracts_dev_node() {
+        let df = "Filesystem    512-blocks      Used Available Capacity  Mounted on\n\
+                  /dev/disk3s5  3906971480 100000000 50000000    67%  /System/Volumes/Data\n";
+        assert_eq!(parse_df_device(df).as_deref(), Some("/dev/disk3s5"));
+    }
+
+    #[test]
+    fn parse_df_device_rejects_missing_or_nondevice() {
+        assert_eq!(parse_df_device(""), None);
+        assert_eq!(parse_df_device("only a header line\n"), None);
+        assert_eq!(
+            parse_df_device("header\nmap auto_home 0 0 ... /home\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_storage_type_for_root_does_not_panic() {
+        // End-to-end exercise of df + diskutil on a path that always exists.
+        // We don't assert a specific profile (varies by host), only that the
+        // pipeline runs without panicking and yields a sane Option.
+        let _ = detect_storage_type(Path::new("/"));
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +525,25 @@ mod tests {
         assert_eq!("nvme".parse(), Ok(DiskIoProfile::Nvme));
         assert_eq!("NVMe".parse(), Ok(DiskIoProfile::Nvme));
         assert_eq!("invalid".parse::<DiskIoProfile>(), Err(()));
+    }
+
+    #[test]
+    fn try_resolve_for_path_passes_explicit_profiles_through() {
+        let path = Path::new("/nonexistent-path-for-test");
+        assert_eq!(
+            DiskIoProfile::Nvme.try_resolve_for_path(path),
+            Some(DiskIoProfile::Nvme)
+        );
+        assert_eq!(
+            DiskIoProfile::Hdd.try_resolve_for_path(path),
+            Some(DiskIoProfile::Hdd)
+        );
+        // For Auto the two resolvers must agree: same profile when
+        // detection succeeds, silent SSD fallback when it fails.
+        let expected = DiskIoProfile::Auto
+            .try_resolve_for_path(path)
+            .unwrap_or(DiskIoProfile::Ssd);
+        assert_eq!(DiskIoProfile::Auto.resolve_for_path(path), expected);
     }
 
     #[test]

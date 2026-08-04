@@ -127,17 +127,20 @@ pub fn init_logging_full(
     // Flags are combinable: --debug + --profile enables both debug logs and profiling spans.
     //
     // When debug_mode is enabled, we only enable DEBUG for xearthlayer crate.
-    // Third-party crates (especially fuse3) produce extremely verbose DEBUG output
-    // that can flood the log and cause performance issues.
+    // fuse3 is pinned to WARN in every arm: it instruments every FUSE handler with
+    // an INFO span, so at the default `info` level it emits a log line per syscall.
+    // On macOS this is catastrophic — Finder/Spotlight/save-panel constantly stat the
+    // mount, and combined with the debug build's FmtSpan::CLOSE + pretty() format it
+    // floods the log at ~10 MB/s. WARN keeps fuse3 quiet while preserving our logs.
     //
     // When profile_mode is enabled, we enable DEBUG for the "profiling" target —
     // our spans use `target: "profiling"` to isolate them from ambient events.
     let env_filter = match (profile_mode, debug_mode) {
         (true, true) => EnvFilter::new("info,fuse3=warn,profiling=debug,xearthlayer=debug"),
         (true, false) => EnvFilter::new("info,fuse3=warn,profiling=debug"),
-        (false, true) => EnvFilter::new("info,xearthlayer=debug"),
+        (false, true) => EnvFilter::new("info,fuse3=warn,xearthlayer=debug"),
         (false, false) => {
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,fuse3=warn"))
         }
     };
 

@@ -247,18 +247,30 @@ The regex pattern for recognition:
 
 | Operation | Behavior |
 |-----------|----------|
-| `open` | Virtual DDS inodes: `FOPEN_DIRECT_IO`; Real passthrough files: default flags |
+| `open` | Virtual DDS inodes: `VIRTUAL_DDS_OPEN_FLAGS` (platform-dependent, see below); Real passthrough files: default flags |
 | `read` | For DDS: serve from cache/generated; For others: read from source |
 | `release` | Clean up handles |
 
-### Direct I/O for Virtual DDS Files
+### Open Flags for Virtual DDS Files
 
-`Fuse3OrthoUnionFS` implements `open()` to set `FOPEN_DIRECT_IO` on virtual DDS inodes. This bypasses the kernel page cache for generated textures:
+Both filesystems set `VIRTUAL_DDS_OPEN_FLAGS` (single source of truth in
+`fuse/fuse3/shared.rs`) on virtual DDS inodes in `open()`. The value is
+platform-dependent:
+
+**Linux: `FOPEN_DIRECT_IO`** -- bypasses the kernel page cache for generated textures:
 
 - **Full observability** -- every X-Plane DDS read goes through the FUSE handler, visible to `FuseLoadMonitor`, `SceneTracker`, and `DdsAccessEvent`
 - **No stale data** -- page cache cannot serve outdated DDS data after provider changes or cache clears
 - **Reduced kernel memory** -- no page cache duplication of data already in the moka memory cache
 - Real passthrough files use default kernel caching (unchanged)
+
+**macOS: `0` (page cache enabled)** -- direct I/O breaks X-Plane's `mmap`-based
+texture loading under macFUSE (`EXC_BAD_ACCESS` in the sim's texture loader),
+so generated textures use normal kernel caching. Consequences:
+
+- **Reduced observability** -- once the kernel caches a DDS file, repeat reads never reach FUSE. `SceneTracker`, `DdsAccessEvent`, and FUSE-load calibration only see the *cold first read* of each tile; `InferenceAdapter` position inference degrades to "tiles seen once since mount", so steady-state position tracking is effectively **Web API-only** on macOS
+- **Prefetch is unaffected** in practice: the adaptive prefetcher is driven by Web API telemetry, and cold reads (the ones that matter for generation) always reach FUSE
+- Stale-data risk is acceptable: generated DDS content for a given tile/provider is immutable within a run
 
 ### Synthesized DDS Attributes
 
@@ -512,7 +524,7 @@ The DDS generation system uses a job/task framework:
 ### Operating Systems
 
 - Linux: Native FUSE support (✅ fully working)
-- macOS: Requires macFUSE (⏳ planned)
+- macOS: Requires [macFUSE](https://macfuse.io) (✅ working, Apple Silicon tested — see [macOS guide](../macos.md))
 - Windows: Requires WinFSP (⏳ planned)
 
 ### Scenery Compatibility

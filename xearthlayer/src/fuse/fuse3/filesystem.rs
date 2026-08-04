@@ -4,7 +4,7 @@
 //! All operations are async and run concurrently on the Tokio runtime.
 
 use super::inode::InodeManager;
-use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL};
+use super::shared::{DdsRequestor, FileAttrBuilder, VirtualDdsConfig, TTL, VIRTUAL_DDS_OPEN_FLAGS};
 use super::types::{Fuse3Error, Fuse3Result, MountHandle};
 use crate::executor::{DdsClient, StorageConcurrencyLimiter};
 use crate::fuse::parse_dds_filename;
@@ -328,6 +328,37 @@ impl Filesystem for Fuse3PassthroughFS {
 
         let attr = self.metadata_to_attr(ino, &metadata);
         Ok(ReplyAttr { ttl: TTL, attr })
+    }
+
+    /// Open a file.
+    ///
+    /// Linux's kernel honours `FUSE_NO_OPEN_SUPPORT` and handles `open`
+    /// internally when the server returns `ENOSYS`, but macFUSE does not —
+    /// it propagates that `ENOSYS` to the `read()` syscall. So we implement a
+    /// trivial stateless `open` (reads key off the inode, not a file handle).
+    /// Virtual DDS files report [`VIRTUAL_DDS_OPEN_FLAGS`]: direct I/O on Linux so
+    /// every read reaches our handler, but page cache on macOS — X-Plane mmaps
+    /// textures and macFUSE faults when a `direct_io` file is mapped.
+    async fn open(&self, _req: Request, ino: u64, _flags: u32) -> Fuse3InternalResult<ReplyOpen> {
+        let flags = if InodeManager::is_virtual_inode(ino) {
+            VIRTUAL_DDS_OPEN_FLAGS
+        } else {
+            0
+        };
+        Ok(ReplyOpen { fh: 0, flags })
+    }
+
+    /// Release an open file. Stateless passthrough holds no per-handle state.
+    async fn release(
+        &self,
+        _req: Request,
+        _ino: u64,
+        _fh: u64,
+        _flags: u32,
+        _lock_owner: u64,
+        _flush: bool,
+    ) -> Fuse3InternalResult<()> {
+        Ok(())
     }
 
     /// Read data from a file.
