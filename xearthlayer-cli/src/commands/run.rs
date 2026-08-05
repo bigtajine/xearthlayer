@@ -148,8 +148,10 @@ pub fn run(args: RunArgs) -> Result<(), CliError> {
     let parallel_downloads = args.parallel.unwrap_or(32);
 
     // Build configurations
+    // Mipmap levels are left unset so the encoder emits the full chain for the
+    // texture size — a truncated chain makes X-Plane clamp sampling and band
+    // sloped terrain at grazing angles.
     let texture_config = TextureConfig::new(format)
-        .with_mipmap_count(5)
         .with_compressor(config.texture.compressor.clone())
         .with_gpu_device(config.texture.gpu_device.clone());
     let dds_format = texture_config.format();

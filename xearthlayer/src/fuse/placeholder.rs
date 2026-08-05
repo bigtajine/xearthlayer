@@ -26,7 +26,8 @@ static DEFAULT_PLACEHOLDER: OnceLock<Vec<u8>> = OnceLock::new();
 /// * `width` - Texture width in pixels (typically 4096)
 /// * `height` - Texture height in pixels (typically 4096)
 /// * `format` - DDS compression format (BC1 or BC3)
-/// * `mipmap_count` - Number of mipmap levels (typically 5 for 4096→256)
+/// * `mipmap_count` - Number of mipmap levels; pass
+///   `MipmapGenerator::full_chain_count(width, height)` for the full chain
 ///
 /// # Returns
 ///
@@ -65,13 +66,22 @@ pub fn generate_magenta_placeholder(
 
 /// Generate a default magenta placeholder for X-Plane tiles.
 ///
-/// Uses standard settings: 4096×4096, BC1 compression, 5 mipmap levels.
+/// Uses standard settings: 4096×4096, BC1 compression, full mipmap chain.
+///
+/// The placeholder must carry the same chain length as a real tile — it is
+/// served through the same FUSE read path and checked against the same
+/// [`EXPECTED_DDS_SIZE`].
 ///
 /// # Returns
 ///
 /// Complete DDS file as bytes
 pub fn generate_default_placeholder() -> Result<Vec<u8>, DdsError> {
-    generate_magenta_placeholder(4096, 4096, DdsFormat::BC1, 5)
+    generate_magenta_placeholder(
+        4096,
+        4096,
+        DdsFormat::BC1,
+        crate::dds::MipmapGenerator::full_chain_count(4096, 4096),
+    )
 }
 
 /// Get the default placeholder, guaranteed to never return empty data.
@@ -82,7 +92,7 @@ pub fn generate_default_placeholder() -> Result<Vec<u8>, DdsError> {
 ///
 /// # Returns
 ///
-/// A clone of the cached placeholder DDS file (4096×4096, BC1, 5 mipmaps).
+/// A clone of the cached placeholder DDS file (4096×4096, BC1, full chain).
 ///
 /// # Panics
 ///
@@ -136,10 +146,41 @@ pub fn init_placeholder_cache() -> Result<(), DdsError> {
     Ok(())
 }
 
-/// Expected DDS size for 4096×4096 BC1 with 5 mipmaps.
+/// Total byte size of a BC1 DDS with a full mipmap chain, header included.
 ///
-/// This is the standard size for X-Plane ortho tiles.
-pub const EXPECTED_DDS_SIZE: usize = 11_174_016;
+/// Walks the chain the same way the encoder does — halving until a dimension
+/// reaches 1, and sizing every level as `blocks_wide * blocks_high * 8`. The
+/// `div_ceil` matters for the tail: 4×4, 2×2 and 1×1 each still occupy one
+/// whole 8-byte block, which the naive `w * h / 2` under-counts.
+const fn full_chain_bc1_dds_size(width: u32, height: u32) -> usize {
+    const HEADER_BYTES: usize = 128;
+    const BLOCK_BYTES: usize = 8;
+
+    let mut total = HEADER_BYTES;
+    let mut w = width;
+    let mut h = height;
+
+    loop {
+        let blocks_wide = w.div_ceil(4) as usize;
+        let blocks_high = h.div_ceil(4) as usize;
+        total += blocks_wide * blocks_high * BLOCK_BYTES;
+
+        if w <= 1 || h <= 1 {
+            return total;
+        }
+
+        w /= 2;
+        h /= 2;
+    }
+}
+
+/// Expected DDS size for a 4096×4096 BC1 tile with a full mipmap chain.
+///
+/// This is the standard size for X-Plane ortho tiles: 13 levels, 11,184,952
+/// bytes. `validate_dds_or_placeholder` gates every FUSE read against it, so
+/// it must track what the encoder actually emits — a regression test asserts
+/// both agree.
+pub const EXPECTED_DDS_SIZE: usize = full_chain_bc1_dds_size(4096, 4096);
 
 /// Validates that DDS data is well-formed and returns it, or substitutes
 /// the default placeholder if validation fails.
@@ -150,7 +191,8 @@ pub const EXPECTED_DDS_SIZE: usize = 11_174_016;
 /// # Validation checks
 ///
 /// 1. Data is not empty
-/// 2. Data has correct size (11,174,016 bytes for 4096×4096 BC1)
+/// 2. Data has correct size ([`EXPECTED_DDS_SIZE`] — 11,184,952 bytes for a
+///    4096×4096 BC1 tile with its full 13-level mipmap chain)
 /// 3. Data starts with "DDS " magic bytes
 ///
 /// # Returns
@@ -269,8 +311,8 @@ mod tests {
         assert!(result.is_ok());
         let dds = result.unwrap();
 
-        // Should be 4096×4096 BC1 with 5 mipmaps
-        assert_eq!(dds.len(), 11_174_016);
+        // Should be 4096×4096 BC1 with the full 13-level mipmap chain
+        assert_eq!(dds.len(), EXPECTED_DDS_SIZE);
         assert_eq!(&dds[0..4], b"DDS ");
     }
 
@@ -374,10 +416,10 @@ mod tests {
     #[test]
     fn test_get_default_placeholder_correct_size() {
         let placeholder = get_default_placeholder();
-        // Should be 4096×4096 BC1 with 5 mipmaps = 11,174,016 bytes
+        // Should be 4096×4096 BC1 with the full 13-level chain = 11,184,952 bytes
         assert_eq!(
             placeholder.len(),
-            11_174_016,
+            EXPECTED_DDS_SIZE,
             "Placeholder should be the expected size for X-Plane tiles"
         );
     }
