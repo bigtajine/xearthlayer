@@ -745,7 +745,10 @@ mod tests {
             "first failure must latch the warn-once flag"
         );
 
-        // Second call must not reset the flag (proves the warning is emitted once).
+        // Second call must not reset the flag (the flag latches after the
+        // first failure and stays latched; see
+        // `memory_sample_emits_no_event_when_probe_unavailable` for the
+        // companion assertion that no event is actually emitted).
         daemon.log_memory_sample();
         assert!(daemon.memory_probe_failed);
     }
@@ -769,6 +772,173 @@ mod tests {
             "working probe must not latch failure"
         );
         assert_eq!(daemon.state.chunk_index_entries, 99);
+    }
+
+    // =========================================================================
+    // Tracing capture harness for asserting on the emitted "Memory sample"
+    // event itself (field names, sources, and MB truncation), not just that
+    // `log_memory_sample` runs without panicking.
+    // =========================================================================
+
+    /// Visitor that records every field of a tracing event as a string,
+    /// keyed by field name, using `record_debug` as the sole capture point.
+    ///
+    /// `Visit`'s other `record_*` methods (u64, i64, bool, str, ...) all have
+    /// default implementations that delegate to `record_debug`, so this one
+    /// override captures every field type emitted by `log_memory_sample`.
+    /// The implicit message field (`"Memory sample"`) arrives as a `Debug`
+    /// value too: `std::fmt::Arguments`'s `Debug` impl forwards to `Display`,
+    /// so the captured string has no surrounding quotes.
+    struct RecordingVisitor<'a>(&'a mut std::collections::HashMap<String, String>);
+
+    impl tracing::field::Visit for RecordingVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+    }
+
+    /// A `tracing_subscriber::Layer` that appends every event's fields to a
+    /// shared buffer, in emission order.
+    struct RecordingLayer {
+        events: std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RecordingLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = std::collections::HashMap::new();
+            event.record(&mut RecordingVisitor(&mut fields));
+            self.events.lock().unwrap().push(fields);
+        }
+    }
+
+    /// Runs `f` under a tracing subscriber that captures every event's
+    /// fields, returning them in emission order. Uses only
+    /// `tracing`/`tracing-subscriber`, both already direct dependencies of
+    /// this crate (see Cargo.toml) — no new dependency is introduced.
+    fn capture_events<F: FnOnce()>(f: F) -> Vec<std::collections::HashMap<String, String>> {
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let layer = RecordingLayer {
+            events: std::sync::Arc::clone(&events),
+        };
+        let subscriber = tracing_subscriber::registry().with(layer);
+        tracing::subscriber::with_default(subscriber, f);
+        std::sync::Arc::try_unwrap(events)
+            .expect("no other references to the capture buffer should remain")
+            .into_inner()
+            .unwrap()
+    }
+
+    /// Finds the first captured event whose message is "Memory sample".
+    fn find_memory_sample(
+        events: &[std::collections::HashMap<String, String>],
+    ) -> Option<&std::collections::HashMap<String, String>> {
+        events
+            .iter()
+            .find(|fields| fields.get("message").map(String::as_str) == Some("Memory sample"))
+    }
+
+    #[test]
+    fn memory_sample_line_carries_every_field_from_its_correct_source() {
+        const MB: u64 = 1024 * 1024;
+
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::new(
+                5 * MB + 1, // deliberately not a whole number of MB
+                6 * MB,
+            )),
+        );
+
+        // Every numeric field is seeded to a distinct value so that a
+        // swapped source, a renamed/reordered field, or a silently dropped
+        // field cannot pass this test: any of those would make at least one
+        // of the per-field assertions below fail.
+        daemon.state.encodes_completed = 10; // tiles_done
+        daemon.state.encodes_active = 11;
+        daemon.state.chunks_downloaded = 12; // chunks_ok
+        daemon.state.chunks_failed = 13;
+        daemon.state.memory_cache_size_bytes = 14 * MB + 999_999; // mem_cache_mb, also not a whole MB
+        daemon.state.dds_disk_cache_size_bytes = 15 * MB; // dds_disk_mb
+        daemon.state.chunk_disk_cache_size_bytes = 16 * MB; // chunk_disk_mb
+        daemon.state.disk_bytes_evicted = 17 * MB; // gc_evicted_mb
+        daemon.state.chunk_index_entries = 18;
+        daemon.state.disk_writes_active = 19;
+
+        let events = capture_events(|| daemon.log_memory_sample());
+        let sample = find_memory_sample(&events)
+            .expect("log_memory_sample must emit a \"Memory sample\" event");
+
+        // Field-by-field: name -> expected value. `rss_mb` and `mem_cache_mb`
+        // are seeded from byte counts that are NOT whole multiples of MB, so
+        // this also proves the emit line truncates to MB rather than leaking
+        // raw bytes through under an "_mb" name.
+        let expected: &[(&str, &str)] = &[
+            ("rss_mb", "5"),
+            ("vm_mb", "6"),
+            ("threads", "42"), // StaticMemoryProbe::new fixes threads at 42
+            ("tiles_done", "10"),
+            ("encodes_active", "11"),
+            ("chunks_ok", "12"),
+            ("chunks_failed", "13"),
+            ("mem_cache_mb", "14"),
+            ("dds_disk_mb", "15"),
+            ("chunk_disk_mb", "16"),
+            ("gc_evicted_mb", "17"),
+            ("chunk_index_entries", "18"),
+            ("disk_writes_active", "19"),
+        ];
+
+        for (field, value) in expected {
+            assert_eq!(
+                sample.get(*field).map(String::as_str),
+                Some(*value),
+                "field `{field}` did not carry the expected value from its source"
+            );
+        }
+
+        assert!(
+            sample.contains_key("uptime_s"),
+            "uptime_s field must be present"
+        );
+
+        // Belt-and-braces: confirm the fixture values (including the
+        // dynamically-read uptime_s) are pairwise distinct. If they were
+        // not, a swap between two fields sharing a value could pass the
+        // assertions above by coincidence.
+        let mut all_values: Vec<&str> = expected.iter().map(|(_, v)| *v).collect();
+        all_values.push(sample.get("uptime_s").unwrap().as_str());
+        let mut sorted = all_values.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            all_values.len(),
+            "fixture values must be pairwise distinct or a swapped source could go undetected"
+        );
+    }
+
+    #[test]
+    fn memory_sample_emits_no_event_when_probe_unavailable() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::unavailable()),
+        );
+
+        let events = capture_events(|| daemon.log_memory_sample());
+
+        assert!(
+            find_memory_sample(&events).is_none(),
+            "no \"Memory sample\" event may be emitted when the probe is unavailable"
+        );
     }
 
     #[tokio::test]
