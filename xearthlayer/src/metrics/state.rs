@@ -140,7 +140,9 @@ pub struct AggregatedState {
     pub chunk_disk_cache_hits: u64,
     /// Chunk disk cache misses.
     pub chunk_disk_cache_misses: u64,
-    /// Active disk writes (chunks only — DDS writes don't emit write events).
+    /// Active disk writes across both tiers: chunk disk cache writes and
+    /// DDS disk cache writes both emit `DiskWriteStarted`/`DiskWriteCompleted`
+    /// and are counted here.
     pub disk_writes_active: u64,
     /// Total bytes written to chunk disk cache.
     pub chunk_disk_bytes_written: u64,
