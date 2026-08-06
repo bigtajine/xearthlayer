@@ -29,6 +29,14 @@ pub trait MemoryProbe: Send + Sync {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ProcessMemoryProbe;
 
+/// Serializes the first call to `memory_stats()` to work around a race in memory-stats 1.2.0.
+///
+/// memory-stats uses an atomic CAS to guard init on Linux. A concurrent loser thread may read
+/// the uninitialized state before the winner has written it, causing PAGE_SIZE to remain 0 and
+/// both physical_mem and virtual_mem to come out as 0. Calling once here ensures the static
+/// init completes before any concurrent use in the test suite or daemon.
+static MEMORY_STATS_INIT: std::sync::Once = std::sync::Once::new();
+
 impl ProcessMemoryProbe {
     /// Creates a new probe.
     pub fn new() -> Self {
@@ -58,6 +66,12 @@ impl ProcessMemoryProbe {
 
 impl MemoryProbe for ProcessMemoryProbe {
     fn sample(&self) -> Option<MemorySample> {
+        // Serialize the first call to memory_stats to ensure upstream initialization completes
+        // before concurrent use (see MEMORY_STATS_INIT doc comment).
+        MEMORY_STATS_INIT.call_once(|| {
+            let _ = memory_stats::memory_stats();
+        });
+
         let stats = memory_stats::memory_stats()?;
         Some(MemorySample {
             rss_bytes: stats.physical_mem as u64,
