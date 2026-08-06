@@ -53,6 +53,7 @@ Technical documentation for XEarthLayer developers and contributors.
 |----------|-------------|
 | [Debug Map](debug-map.md) | Live browser map for prefetch observability (`--features debug-map`) |
 | [Memory Profiling](memory-profiling.md) | Heaptrack profiling guide for memory optimization |
+| [Memory Telemetry](memory-telemetry.md) | Periodic in-process memory sampling for long-flight diagnosis (v0.4.7+) |
 | [Application Release Runbook](app-release-runbook.md) | Release workflow, versioning, and troubleshooting |
 
 ## Root Cause Analysis

@@ -446,5 +446,6 @@ CI will fail if pre-commit checks were not run.
 - Zoom level overlap management: `docs/dev/zoom-level-overlap-design.md` (dedupe, gap analysis)
 - **Consolidated FUSE mounting**: `docs/dev/consolidated-mounting-design.md` (single ortho mount, patches + packages)
 - **GeoIndex design**: `docs/dev/geo-index-design.md` (geospatial reference database, patch region ownership)
+- **Memory telemetry**: `docs/dev/memory-telemetry.md` (periodic memory sampling, trace interpretation, confounders)
 - memorize review allow(dead_code) macros at major checkpoints. Refactor aggresively to remove them when appropriate.
 - memorize ensure to update the projects documentation to reflect the current state of the project before committing changes
