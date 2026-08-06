@@ -14,6 +14,7 @@
 //! processing events. This ensures reporters never block event processing.
 
 use super::event::MetricEvent;
+use super::memory_probe::{MemoryProbe, ProcessMemoryProbe};
 use super::state::{AggregatedState, TimeSeriesHistory, DEFAULT_HISTORY_CAPACITY};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -22,6 +23,12 @@ use tokio_util::sync::CancellationToken;
 
 /// Interval between time-series samples (100ms).
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Interval between process memory samples (60s).
+///
+/// Deliberately not configurable: traces are pooled across users and machines,
+/// so a fixed cadence removes one variable. A 12h flight adds 720 lines.
+const MEMORY_SAMPLE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Shared state handle for read-only access by reporters.
 pub type SharedMetricsState = Arc<RwLock<MetricsStateSnapshot>>;
@@ -67,15 +74,34 @@ pub struct MetricsDaemon {
 
     /// Last FUSE requests completed (for rate calculation).
     last_fuse_completed: u64,
+
+    /// Probe for reading process memory.
+    memory_probe: Arc<dyn MemoryProbe>,
+
+    /// Set once the probe has failed, so the warning is logged only once.
+    memory_probe_failed: bool,
 }
 
 impl MetricsDaemon {
-    /// Creates a new metrics daemon.
+    /// Creates a new metrics daemon with the production memory probe.
     ///
     /// # Arguments
     ///
     /// * `rx` - Channel receiver for incoming events
     pub fn new(rx: mpsc::UnboundedReceiver<MetricEvent>) -> Self {
+        Self::with_memory_probe(rx, Arc::new(ProcessMemoryProbe::new()))
+    }
+
+    /// Creates a new metrics daemon with an injected memory probe.
+    ///
+    /// # Arguments
+    ///
+    /// * `rx` - Channel receiver for incoming events
+    /// * `memory_probe` - Probe used for periodic memory sampling
+    pub fn with_memory_probe(
+        rx: mpsc::UnboundedReceiver<MetricEvent>,
+        memory_probe: Arc<dyn MemoryProbe>,
+    ) -> Self {
         let shared_state = Arc::new(RwLock::new(MetricsStateSnapshot::default()));
 
         Self {
@@ -88,6 +114,8 @@ impl MetricsDaemon {
             last_disk_bytes_written: 0,
             last_jobs_completed: 0,
             last_fuse_completed: 0,
+            memory_probe,
+            memory_probe_failed: false,
         }
     }
 
@@ -111,6 +139,9 @@ impl MetricsDaemon {
         // Don't let missed ticks pile up
         sample_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        let mut memory_interval = tokio::time::interval(MEMORY_SAMPLE_INTERVAL);
+        memory_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
             tokio::select! {
                 biased;
@@ -130,6 +161,11 @@ impl MetricsDaemon {
                 _ = sample_interval.tick() => {
                     self.sample_time_series();
                     self.update_shared_state();
+                }
+
+                // Sample process memory
+                _ = memory_interval.tick() => {
+                    self.log_memory_sample();
                 }
             }
         }
@@ -285,6 +321,44 @@ impl MetricsDaemon {
                     self.state.fuse_requests_waiting.saturating_sub(1);
             }
         }
+    }
+
+    /// Emits one memory sample line.
+    ///
+    /// Every context field defeats a specific confounder: cache occupancy and
+    /// GC pressure differed by orders of magnitude between the two issue #209
+    /// flights, which is what made them incomparable. `disk_writes_active`
+    /// correlated against `rss_mb` is what discriminates the candidate causes.
+    fn log_memory_sample(&mut self) {
+        let Some(sample) = self.memory_probe.sample() else {
+            if !self.memory_probe_failed {
+                self.memory_probe_failed = true;
+                tracing::warn!("Memory probe unavailable; memory samples disabled");
+            }
+            return;
+        };
+
+        const MB: u64 = 1024 * 1024;
+        let state = &self.state;
+
+        tracing::info!(
+            uptime_s = state.uptime().as_secs(),
+            rss_mb = sample.rss_bytes / MB,
+            vm_mb = sample.vm_bytes / MB,
+            // 0 means "not readable on this platform", not "no threads".
+            threads = sample.threads.unwrap_or(0),
+            tiles_done = state.encodes_completed,
+            encodes_active = state.encodes_active,
+            chunks_ok = state.chunks_downloaded,
+            chunks_failed = state.chunks_failed,
+            mem_cache_mb = state.memory_cache_size_bytes / MB,
+            dds_disk_mb = state.dds_disk_cache_size_bytes / MB,
+            chunk_disk_mb = state.chunk_disk_cache_size_bytes / MB,
+            gc_evicted_mb = state.disk_bytes_evicted / MB,
+            chunk_index_entries = state.chunk_index_entries,
+            disk_writes_active = state.disk_writes_active,
+            "Memory sample"
+        );
     }
 
     /// Samples current rates for time-series history.
@@ -654,6 +728,47 @@ mod tests {
 
         daemon.process_event(MetricEvent::FuseRequestCompleted);
         assert_eq!(daemon.state.fuse_requests_active, 0);
+    }
+
+    #[test]
+    fn memory_sample_is_skipped_when_probe_unavailable() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::unavailable()),
+        );
+
+        assert!(!daemon.memory_probe_failed);
+        daemon.log_memory_sample();
+        assert!(
+            daemon.memory_probe_failed,
+            "first failure must latch the warn-once flag"
+        );
+
+        // Second call must not reset the flag (proves the warning is emitted once).
+        daemon.log_memory_sample();
+        assert!(daemon.memory_probe_failed);
+    }
+
+    #[test]
+    fn memory_sample_runs_with_a_working_probe() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::new(
+                5_412 * 1024 * 1024,
+                6_218 * 1024 * 1024,
+            )),
+        );
+
+        daemon.process_event(MetricEvent::ChunkIndexEntriesUpdate { entries: 99 });
+        daemon.log_memory_sample();
+
+        assert!(
+            !daemon.memory_probe_failed,
+            "working probe must not latch failure"
+        );
+        assert_eq!(daemon.state.chunk_index_entries, 99);
     }
 
     #[tokio::test]
