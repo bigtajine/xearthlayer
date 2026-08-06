@@ -29,7 +29,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::Instrument;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Tile dimensions
 const TILE_SIZE: u32 = 4096;
@@ -322,7 +322,7 @@ where
                     );
                 }
 
-                info!(
+                debug!(
                     job_id = %job_id,
                     tile = ?self.tile,
                     size_bytes = dds_size,
