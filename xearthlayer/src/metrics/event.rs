@@ -108,6 +108,16 @@ pub enum MetricEvent {
         bytes: u64,
     },
 
+    /// Update the current chunk LRU index entry count.
+    ///
+    /// Emitted by the chunk `DiskCacheProvider` after writes and evictions.
+    /// The index is a memory consumer in its own right — millions of entries on
+    /// a full cache — so it is tracked alongside the byte totals.
+    ChunkIndexEntriesUpdate {
+        /// Current number of entries in the chunk LRU index.
+        entries: u64,
+    },
+
     // =========================================================================
     // Memory Cache Events (tile-level, tracked in daemon)
     // =========================================================================
@@ -218,6 +228,7 @@ impl MetricEvent {
             Self::DiskCacheEvicted { .. } => "disk_cache_evicted",
             Self::DiskCacheSizeUpdate { .. } => "disk_cache_size_update",
             Self::DdsDiskCacheSizeUpdate { .. } => "dds_disk_cache_size_update",
+            Self::ChunkIndexEntriesUpdate { .. } => "chunk_index_entries_update",
             Self::MemoryCacheHit { .. } => "memory_cache_hit",
             Self::MemoryCacheMiss { .. } => "memory_cache_miss",
             Self::MemoryCacheSizeUpdate { .. } => "memory_cache_size_update",

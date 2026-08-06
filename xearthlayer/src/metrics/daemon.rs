@@ -188,6 +188,9 @@ impl MetricsDaemon {
             MetricEvent::DdsDiskCacheSizeUpdate { bytes } => {
                 self.state.dds_disk_cache_size_bytes = bytes;
             }
+            MetricEvent::ChunkIndexEntriesUpdate { entries } => {
+                self.state.chunk_index_entries = entries;
+            }
             MetricEvent::DdsDiskCacheHit { bytes, is_fuse } => {
                 self.state.dds_disk_cache_hits += 1;
                 self.state.dds_disk_bytes_read += bytes;
@@ -444,6 +447,18 @@ mod tests {
             bytes: 4_000_000_000,
         });
         assert_eq!(daemon.state.chunk_disk_cache_size_bytes, 4_000_000_000);
+    }
+
+    #[test]
+    fn chunk_index_entries_update_sets_gauge() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::new(rx);
+
+        daemon.process_event(MetricEvent::ChunkIndexEntriesUpdate {
+            entries: 12_046_463,
+        });
+
+        assert_eq!(daemon.state.chunk_index_entries, 12_046_463);
     }
 
     #[test]

@@ -154,6 +154,8 @@ pub struct AggregatedState {
     pub disk_bytes_evicted: u64,
     /// Current chunk disk cache size in bytes (absolute value from LRU index).
     pub chunk_disk_cache_size_bytes: u64,
+    /// Current number of entries in the chunk disk cache LRU index.
+    pub chunk_index_entries: u64,
 
     // =========================================================================
     // DDS Disk Cache Metrics
@@ -267,6 +269,7 @@ impl AggregatedState {
             initial_disk_cache_bytes: 0,
             disk_bytes_evicted: 0,
             chunk_disk_cache_size_bytes: 0,
+            chunk_index_entries: 0,
             dds_disk_cache_hits: 0,
             dds_disk_cache_misses: 0,
             fuse_dds_disk_cache_hits: 0,

@@ -197,6 +197,12 @@ impl MetricsClient {
         self.send(MetricEvent::DdsDiskCacheSizeUpdate { bytes });
     }
 
+    /// Reports the current chunk LRU index entry count.
+    #[inline]
+    pub fn chunk_index_entries(&self, entries: u64) {
+        self.send(MetricEvent::ChunkIndexEntriesUpdate { entries });
+    }
+
     // =========================================================================
     // Memory Cache Events
     // =========================================================================
