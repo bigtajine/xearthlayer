@@ -29,7 +29,9 @@ so that a single unattended flight discriminates between them:
    storage through `tokio::fs`, which queues on the tokio blocking pool. Neither
    spawn is gated by the executor's `max_concurrent_jobs` or by any
    `ResourcePool` permit, so if the blocking pool saturates the queue and its
-   buffers grow without limit.
+   buffers grow without limit. The two spawns are independently observable as
+   `disk_writes_active` and `mem_cache_writes_active` respectively — a backlog
+   in either one is this candidate.
 2. **glibc arena retention.** An 11.2 MB buffer sits just below glibc's adaptive
    `mmap` threshold ceiling of 32 MB. Once the threshold has adapted upward past
    the buffer size, those allocations are served from per-thread arenas rather
@@ -41,10 +43,10 @@ so that a single unattended flight discriminates between them:
 ## The sample line
 
 ```
-2026-08-06 06:20:33Z  INFO Memory sample uptime_s=60 rss_mb=873 vm_mb=1459 threads=71 tiles_done=0 encodes_active=0 chunks_ok=0 chunks_failed=0 mem_cache_mb=0 dds_disk_mb=158268 chunk_disk_mb=55301 gc_evicted_mb=0 chunk_index_entries=3803083 disk_writes_active=0
+2026-08-06 06:20:33Z  INFO Memory sample uptime_s=60 rss_mb=873 vm_mb=1459 swap_mb=0 threads=71 tiles_done=0 encodes_active=0 chunks_ok=0 chunks_failed=0 mem_cache_mb=0 dds_disk_mb=158268 chunk_disk_mb=55301 gc_evicted_mb=0 chunk_index_entries=3803083 disk_writes_active=0 mem_cache_writes_active=0
 ```
 
-Fourteen fields, in emission order. Every `_mb` value is truncating integer
+Sixteen fields, in emission order. Every `_mb` value is truncating integer
 division by 1 MiB (1 048 576 bytes), so a value of `0` means "under one
 mebibyte", not necessarily "nothing".
 
@@ -53,6 +55,7 @@ mebibyte", not necessarily "nothing".
 | `uptime_s` | `AggregatedState::uptime()` | Whole seconds since the metrics daemon started, which is effectively service start. Use it as the x-axis. |
 | `rss_mb` | `MemoryProbe` → sum of `Rss:` in `/proc/self/smaps` | Physical pages currently held. **Excludes anything the kernel has swapped out.** |
 | `vm_mb` | `MemoryProbe` → sum of `Size:` in `/proc/self/smaps` | Total mapped address space. Counts anonymous mappings whether resident or paged out. |
+| `swap_mb` | `MemoryProbe` → `/proc/self/status` `VmSwap:` | Anonymous memory swapped out to disk. **This is the field that actually caught #209**: at the moment of the kill, `rss_mb` alone read a healthy 9.3 GB while `swap_mb` would have read 54.7 GB. `0` means **not readable on this platform**, not "nothing swapped" — same convention as `threads`. Linux-only; read in the same `/proc/self/status` pass as `threads`, so it costs no extra file open. |
 | `threads` | `/proc/self/status` `Threads:` | OS thread count. `0` means **not readable on this platform**, not "no threads" — see below. |
 | `tiles_done` | `state.encodes_completed` | Cumulative DDS encodes completed. The load counter: divide by `uptime_s` for tiles/second. |
 | `encodes_active` | `state.encodes_active` | Encodes in flight right now. Each one holds a 4096×4096 RGBA source image (64 MiB) plus its output buffer. |
@@ -62,35 +65,80 @@ mebibyte", not necessarily "nothing".
 | `dds_disk_mb` | `state.dds_disk_cache_size_bytes` | Current DDS disk tier size, from that tier's LRU index. |
 | `chunk_disk_mb` | `state.chunk_disk_cache_size_bytes` | Current chunk disk tier size, from that tier's LRU index. |
 | `gc_evicted_mb` | `state.disk_bytes_evicted` | Cumulative bytes freed by the disk GC daemons, **summed across both disk tiers**. |
-| `chunk_index_entries` | `state.chunk_index_entries` | Live entries in the **chunk** tier's `LruIndex`. The DDS tier does not report this. |
+| `chunk_index_entries` | `state.chunk_index_entries` | Live entries in the **chunk** tier's `LruIndex`. The DDS tier does not report this. Refreshed on every chunk-tier set/delete and once at startup (`DiskCacheProvider::report_size_to_metrics`), **but the GC batch task (`tasks/cache_gc_batch.rs`) removes entries from the index directly and does not call it**, so this gauge can lag behind the true index size during heavy GC — a burst of evictions may not be reflected until the next unrelated set/delete nudges a report. See the bytes-per-entry estimate below for translating a raw count into an approximate memory footprint. |
 | `disk_writes_active` | `state.disk_writes_active` | Fire-and-forget disk cache writes currently in flight, counting both chunk writes from `DownloadChunksTask` and DDS tile writes from `BuildAndCacheDdsTask`. |
+| `mem_cache_writes_active` | `state.mem_cache_writes_active` | Fire-and-forget **memory**-cache writes currently in flight — the `cache.put()` spawn in `BuildAndCacheDdsTask`, mirroring `disk_writes_active` but for the moka tier. Added specifically because this spawn previously emitted no start/complete pair at all (only `mem_cache_mb`, which only moves after the write completes), which meant a backlog concentrated there was invisible and would misread as candidate 2 (allocator retention). See the decision table below. |
+
+### Estimating `chunk_index_entries` memory footprint
+
+`chunk_index_entries` is a raw count, not a byte figure, so it is easy to
+misjudge whether 12 million entries means roughly 1 GB or roughly 10 GB. The
+index is `DashMap<String, CacheEntryMetadata>` (`cache/lru_index.rs`), and
+per entry, on a 64-bit build, roughly:
+
+- `CacheEntryMetadata` value: `size_bytes: u64` (8 bytes) + `last_accessed:
+  Instant` (16 bytes) ≈ **24 bytes**.
+- `String` key struct (ptr/len/cap): **24 bytes**, plus a separate heap
+  allocation for the key text itself. Chunk keys look like
+  `"chunk:15:12754:5279:8:12"` (~25 bytes); with allocator rounding, call it
+  **~32–48 bytes**.
+- `DashMap`/`hashbrown` bucket overhead (control bytes, load-factor slack):
+  a few bytes per entry, **negligible** at this scale.
+
+Summing to roughly **80–100 bytes per entry**, 12 million entries is
+approximately **1–1.2 GB** — order-of-magnitude closer to 1 GB than 10 GB.
+**This is an order-of-magnitude estimate derived from the type definitions,
+not a measurement** (no allocator introspection or heap profiler was run to
+confirm it); treat it as a sanity check on `chunk_index_entries`, not a
+precise accounting figure.
 
 ### `threads=0` means unreadable, not zero
 
 Thread count is read from `/proc/self/status`, which only exists on Linux.
 `memory-stats` does not expose a thread count, and hand-rolling mach FFI for
 macOS was judged not worth the risk on a CI-blocking platform, so
-`ProcessMemoryProbe::thread_count()` returns `None` everywhere except Linux and
-the emit line renders `None` as `0`. A macOS trace will show `threads=0` on
-every line; that tells you nothing about the process.
+`ProcessMemoryProbe::linux_status_fields()` returns `(None, None)` everywhere
+except Linux and the emit line renders `None` as `0` for both `threads` and
+`swap_mb`. A macOS trace will show `threads=0` and `swap_mb=0` on every line;
+that tells you nothing about the process.
 
-### `rss_mb` and `vm_mb` are not interchangeable
+### `vm_mb` on macOS is not comparable to the Linux figure
+
+On macOS, `vm_bytes` comes from mach `task_info`'s virtual size, which
+includes the entire shared address space (shared libraries, framework
+mappings, and other machinery the Linux `Size:` figure does not count the same
+way). It routinely reads in the hundreds of gigabytes for an otherwise
+ordinary process and is **not a meaningful growth signal** on that platform —
+do not compare a macOS `vm_mb` trend against a Linux one, and do not read a
+large absolute macOS `vm_mb` as evidence of anything by itself.
+
+### `rss_mb` and `vm_mb` are not interchangeable — and neither is enough alone
 
 `rss_mb` counts resident pages only. On a machine that is swapping — which is
 exactly the machine that is about to be OOM-killed — a growing process can show
 a **flat or falling** `rss_mb` while the kernel quietly moves its pages to swap.
 In the #209 flight only 9.3 GB of the 64 GB was resident at the moment of the
-kill.
+kill; `rss_mb` alone would have read as healthy right up to the `SIGKILL`.
 
 `vm_mb` counts the whole mapping regardless of residency, so it keeps rising.
 The gap between the two is lazily-reserved-but-never-touched address space plus
-anything paged out. A widening `vm_mb - rss_mb` gap on a system with swap
-enabled is the signal that matters; do not read `rss_mb` alone.
+anything paged out.
+
+`swap_mb` closes this gap directly: it is anonymous memory the kernel has
+actually swapped out, read straight from `VmSwap:` in the same
+`/proc/self/status` pass as `threads`. **Watch `rss_mb + swap_mb`, not
+`rss_mb` alone** — that sum is what actually tracks the process's total
+anonymous footprint, and it is what would have shown the #209 flight climbing
+toward 64 GB instead of sitting at a reassuring 9.3 GB. A widening
+`vm_mb - (rss_mb + swap_mb)` gap on top of that is lazily-reserved address
+space that was never touched at all.
 
 ### The allocator environment line
 
-`log_allocator_environment()` runs once at startup from `CliRunner::log_startup`
-and emits a line only when at least one of `MALLOC_ARENA_MAX`,
+`log_allocator_environment()` runs from `CliRunner::log_startup`, whose only
+caller is the `run` command (`xearthlayer-cli/src/commands/run.rs`) — it does
+**not** run for every subcommand, only when actually starting the service. It
+emits a line only when at least one of `MALLOC_ARENA_MAX`,
 `MALLOC_MMAP_THRESHOLD_` or `MALLOC_TRIM_THRESHOLD_` is set:
 
 ```
@@ -104,29 +152,35 @@ behaviour. Always check for it before comparing two traces.
 
 ## Reading a trace
 
-Plot `rss_mb`, `vm_mb`, `disk_writes_active` and `chunk_index_entries` against
-`uptime_s`. The shape of the first against the other three is what
-discriminates the three candidates.
+Plot `rss_mb`, `swap_mb`, `vm_mb`, `disk_writes_active`,
+`mem_cache_writes_active` and `chunk_index_entries` against `uptime_s`. Treat
+`rss_mb + swap_mb` as the real growth signal (see above), and read its shape
+against the other four — **both** active-write gauges, not just the disk one
+— to discriminate the three candidates.
 
-| `rss_mb` / `vm_mb` | `disk_writes_active` | `chunk_index_entries` | Reading |
-|--------------------|----------------------|-----------------------|---------|
-| climbing | climbing | any | **Candidate 1** — the fire-and-forget cache-write backlog in `tasks/build_and_cache_dds.rs`. Each queued write pins ~11.2 MB, and the paired memory-cache write pins another ~11.2 MB that this gauge does not count. |
-| climbing | flat | climbing | **Candidate 3** — chunk LRU index growth. Cross-check that `chunk_disk_mb` is at its configured ceiling and `gc_evicted_mb` is rising: an index that grows while the tier size is pinned means entries are accumulating faster than GC removes them. |
-| climbing | flat | flat | **Candidate 2** — allocator retention. Nothing in the process is holding more logical data, but the resident footprint grows anyway. Confirm by re-running with `MALLOC_MMAP_THRESHOLD_=1048576`; if growth stops, glibc was hoarding freed buffers in per-thread arenas. |
+| `rss_mb + swap_mb` | `disk_writes_active` | `mem_cache_writes_active` | `chunk_index_entries` | Reading |
+|---------------------|-----------------------|-----------------------------|-------------------------|---------|
+| climbing | climbing | any | any | **Candidate 1** — the fire-and-forget **DDS-disk** cache-write backlog in `tasks/build_and_cache_dds.rs`. Each queued write pins ~11.2 MB. |
+| climbing | any | climbing | any | **Candidate 1** — the fire-and-forget **memory**-cache-write backlog in the same task. Each queued write pins its own ~11.2 MB clone, separately from the disk-write backlog above. |
+| climbing | flat | flat | climbing | **Candidate 3** — chunk LRU index growth. Cross-check that `chunk_disk_mb` is at its configured ceiling and `gc_evicted_mb` is rising: an index that grows while the tier size is pinned means entries are accumulating faster than GC removes them. Remember `chunk_index_entries` can lag during heavy GC (see field table), so confirm with `gc_evicted_mb` rather than reading a momentarily-flat count as proof nothing changed. |
+| climbing | flat | flat | flat | **Candidate 2** — allocator retention. Nothing in the process is holding more logical data, but the resident footprint grows anyway. Confirm by re-running with `MALLOC_MMAP_THRESHOLD_=1048576`; if growth stops, glibc was hoarding freed buffers in per-thread arenas. **This conclusion requires `mem_cache_writes_active` to be flat, not just `disk_writes_active`.** Before `mem_cache_writes_active` existed, this exact disk-flat/index-flat shape was reachable with a backlog concentrated entirely in the uncounted memory-cache spawn — rss climbing while both older gauges sat flat — and would have been misdiagnosed as candidate 2 when it was actually candidate 1. |
 
 Supporting reads:
 
-- **`disk_writes_active` is a lower bound.** The counter is incremented by the
-  first statement *inside* each spawned write task, so a write that has been
-  spawned but not yet polled is invisible. If the tokio worker threads are
-  themselves starved, the real backlog is larger than the number printed.
+- **`disk_writes_active` and `mem_cache_writes_active` are both lower bounds.**
+  Each counter is incremented by the first statement *inside* its spawned
+  write task, so a write that has been spawned but not yet polled is
+  invisible to either gauge. If the tokio worker threads are themselves
+  starved, the real backlog is larger than the numbers printed — for both
+  tiers.
 - **`encodes_active` × 64 MiB is the floor of what encoding costs.** Each
   in-flight encode holds a 4096×4096 RGBA source image (64 MiB) plus its output
   buffer. The number should track the CPU resource pool capacity; if it runs
   materially above that, CPU admission control is not bounding the pipeline and
   the peak is unbounded with it.
 - **`threads`** climbing toward 512 points at the tokio blocking pool (default
-  512 threads) filling up, which is the mechanism behind candidate 1.
+  512 threads) filling up, which is one of the mechanisms behind candidate 1
+  (the DDS-disk write path queues onto it via `tokio::fs`).
 - **`tiles_done` per hour** is the load normaliser. Two traces at wildly
   different tile rates are not telling you about memory, they are telling you
   about workload.
@@ -174,9 +228,12 @@ regime:
    present in only one?
 5. **`tiles_done / uptime_s`** — comparable tile rates.
 
-Only then is a difference in `rss_mb` attributable to the change under test.
-Change one variable per flight. To test candidate 2 properly, the allocator
-override must be flown against a cache that is already full and evicting.
+Only then is a difference in `rss_mb + swap_mb` attributable to the change
+under test. Change one variable per flight. To test candidate 2 properly, the
+allocator override must be flown against a cache that is already full and
+evicting, **and** with `mem_cache_writes_active` confirmed flat throughout —
+otherwise a memory-cache-write backlog (candidate 1) is still on the table and
+the retest proves nothing about the allocator.
 
 ## Submitting a trace
 
@@ -226,14 +283,19 @@ pub trait MemoryProbe: Send + Sync {
 }
 ```
 
-`MemorySample` carries `rss_bytes`, `vm_bytes` and `threads: Option<u64>`.
-Returning `Option` rather than a `Result` is deliberate: a platform that cannot
-supply a reading is not an error condition, it just means no sample line.
+`MemorySample` carries `rss_bytes`, `vm_bytes`, `threads: Option<u64>` and
+`swap_bytes: Option<u64>`. Returning `Option` rather than a `Result` is
+deliberate: a platform that cannot supply a reading is not an error condition,
+it just means no sample line (or, for the two `Option` fields, no value for
+just that field).
 
 `ProcessMemoryProbe` is the production implementation. It delegates to the
 `memory-stats` crate for the byte counts (Linux, macOS and Windows; on Unix its
-only dependency is `libc`, already in the tree) and reads thread count itself
-from `/proc/self/status` on Linux only.
+only dependency is `libc`, already in the tree) and reads thread count and
+swap bytes itself from `/proc/self/status` on Linux only, via
+`ProcessMemoryProbe::linux_status_fields()` — a single read of the file that
+extracts both the `Threads:` and `VmSwap:` lines in one pass, so adding
+`swap_bytes` did not add a second file open per sample.
 
 ### The `memory-stats` initialisation workaround
 
@@ -254,6 +316,13 @@ producing a silent, non-erroring reading of `physical_mem = 0` and
 has completed before any concurrent use. Without it, the first sample of a run
 can be a plausible-looking `rss_mb=0 vm_mb=0`.
 
+As defense in depth for exactly this failure mode, `log_memory_sample` in
+`metrics/daemon.rs` also treats a returned sample with `rss_bytes == 0` as
+equivalent to `None` (same warn-once path, no line emitted), rather than
+trusting the `Once` alone. A `rss_mb=0` line in a trace would otherwise read
+as "process using no memory" instead of "reading failed" — the same class of
+silently-misleading zero this `Once` exists to prevent.
+
 ### Injection and sampling cadence
 
 `MetricsDaemon::new` wires in `ProcessMemoryProbe`; `with_memory_probe` takes an
@@ -271,9 +340,12 @@ to reconcile before two traces could be compared — precisely the failure mode
 described above. Both intervals use `MissedTickBehavior::Skip` so a stalled
 daemon does not emit a burst of catch-up samples.
 
-If the probe returns `None`, the daemon logs one warning
-(`"Memory probe unavailable; memory samples disabled"`), latches
-`memory_probe_failed`, and emits nothing further. The warning is not repeated.
+If the probe returns `None`, **or returns `Some` with `rss_bytes == 0`**, the
+daemon logs one warning (`"Memory probe unavailable; memory samples
+disabled"`), latches `memory_probe_failed`, and emits nothing further for that
+tick. The warning is not repeated, but the probe is retried every subsequent
+tick — a later tick returning a valid reading resumes normal sampling without
+re-latching anything.
 
 Because `MetricsSystem::new` is constructed unconditionally in
 `XEarthLayerService::start`, memory sampling is active for every run, including
@@ -281,18 +353,26 @@ TUI mode.
 
 ### Adding a platform implementation
 
-To add thread count (or any other field) for a new platform:
+To add thread count, swap, or any other field for a new platform:
 
-1. Add a `#[cfg(target_os = "…")]` branch to `ProcessMemoryProbe::thread_count`.
-   The existing `#[cfg(not(target_os = "linux"))]` fallback returns `None`, so
-   nothing breaks if you add a platform and forget a branch — the field just
-   renders as `0`.
+1. Add a `#[cfg(target_os = "…")]` branch to
+   `ProcessMemoryProbe::linux_status_fields` (or a differently-named
+   platform-specific reader, if the new platform's data doesn't come from a
+   single `/proc`-style file the way Linux's does). The existing
+   `#[cfg(not(target_os = "linux"))]` fallback returns `(None, None)`, so
+   nothing breaks if you add a platform and forget a branch — the fields just
+   render as `0`.
 2. Extend `MemorySample` if the platform can supply something the others cannot.
    Any new field must be `Option`-typed with an emit-time default, so a trace
    from one platform stays diffable against a trace from another.
 3. Add the field to the `tracing::info!` call in `log_memory_sample` **at the
-   end** of the field list. Existing field positions are what makes traces from
-   different builds comparable by eye.
+   end** of the field list, once the format has shipped in a release. Existing
+   field positions are what makes traces from different builds comparable by
+   eye. (`swap_mb` and `mem_cache_writes_active` were inserted mid-line rather
+   than appended — grouped next to `vm_mb` and `disk_writes_active`
+   respectively, for readability — because this happened before v0.4.7 first
+   shipped, so no released trace format existed yet to stay compatible with.
+   Once a format has shipped, prefer appending.)
 4. Update the field table in this document and the assertion list in
    `memory_sample_line_carries_every_field_from_its_correct_source`, which seeds
    every field to a distinct value specifically so a swapped or dropped source

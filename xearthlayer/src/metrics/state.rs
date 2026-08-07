@@ -191,6 +191,11 @@ pub struct AggregatedState {
     pub fuse_memory_cache_misses: u64,
     /// Current memory cache size in bytes.
     pub memory_cache_size_bytes: u64,
+    /// Fire-and-forget memory cache writes currently in flight (the spawn in
+    /// `BuildAndCacheDdsTask` that calls `MemoryCache::put`). Mirrors
+    /// `disk_writes_active` but for the memory-cache tier, which previously had
+    /// no in-flight gauge at all — see issue #209.
+    pub mem_cache_writes_active: u64,
 
     // =========================================================================
     // Job Metrics
@@ -283,6 +288,7 @@ impl AggregatedState {
             fuse_memory_cache_hits: 0,
             fuse_memory_cache_misses: 0,
             memory_cache_size_bytes: 0,
+            mem_cache_writes_active: 0,
             jobs_submitted: 0,
             fuse_jobs_submitted: 0,
             jobs_completed: 0,
@@ -332,6 +338,7 @@ impl AggregatedState {
         self.fuse_memory_cache_hits = 0;
         self.fuse_memory_cache_misses = 0;
         self.memory_cache_size_bytes = 0;
+        self.mem_cache_writes_active = 0;
         self.jobs_submitted = 0;
         self.fuse_jobs_submitted = 0;
         self.jobs_completed = 0;

@@ -257,6 +257,13 @@ impl MetricsDaemon {
             MetricEvent::MemoryCacheSizeUpdate { bytes } => {
                 self.state.memory_cache_size_bytes = bytes;
             }
+            MetricEvent::MemCacheWriteStarted => {
+                self.state.mem_cache_writes_active += 1;
+            }
+            MetricEvent::MemCacheWriteCompleted => {
+                self.state.mem_cache_writes_active =
+                    self.state.mem_cache_writes_active.saturating_sub(1);
+            }
 
             // Job events
             MetricEvent::JobSubmitted { is_fuse } => {
@@ -330,7 +337,17 @@ impl MetricsDaemon {
     /// flights, which is what made them incomparable. `disk_writes_active`
     /// correlated against `rss_mb` is what discriminates the candidate causes.
     fn log_memory_sample(&mut self) {
-        let Some(sample) = self.memory_probe.sample() else {
+        // A sample with `rss_bytes == 0` is treated exactly like `None`: it is
+        // the signature of the memory-stats init race the `Once` in
+        // `memory_probe.rs` guards against (see its doc comment). Emitting it
+        // as `rss_mb=0` would read as a healthy, near-empty process instead of
+        // "unavailable" — the same misleading shape as swap being invisible.
+        let sample = self
+            .memory_probe
+            .sample()
+            .filter(|sample| sample.rss_bytes != 0);
+
+        let Some(sample) = sample else {
             if !self.memory_probe_failed {
                 self.memory_probe_failed = true;
                 tracing::warn!("Memory probe unavailable; memory samples disabled");
@@ -345,6 +362,11 @@ impl MetricsDaemon {
             uptime_s = state.uptime().as_secs(),
             rss_mb = sample.rss_bytes / MB,
             vm_mb = sample.vm_bytes / MB,
+            // Anonymous memory swapped out. This is the field that actually
+            // caught #209: rss_mb alone read a healthy 9.3 GB while 54.7 GB
+            // was swapped out. 0 means "not readable on this platform", not
+            // "nothing swapped" — same convention as `threads`.
+            swap_mb = sample.swap_bytes.unwrap_or(0) / MB,
             // 0 means "not readable on this platform", not "no threads".
             threads = sample.threads.unwrap_or(0),
             tiles_done = state.encodes_completed,
@@ -357,6 +379,10 @@ impl MetricsDaemon {
             gc_evicted_mb = state.disk_bytes_evicted / MB,
             chunk_index_entries = state.chunk_index_entries,
             disk_writes_active = state.disk_writes_active,
+            // Mirrors disk_writes_active for the memory-cache spawn, which
+            // previously had no in-flight gauge at all (see MemCacheWriteStarted
+            // doc comment in metrics/event.rs for why that was a diagnosis hole).
+            mem_cache_writes_active = state.mem_cache_writes_active,
             "Memory sample"
         );
     }
@@ -851,10 +877,13 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut daemon = MetricsDaemon::with_memory_probe(
             rx,
-            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::new(
-                5 * MB + 1, // deliberately not a whole number of MB
-                6 * MB,
-            )),
+            std::sync::Arc::new(
+                crate::metrics::memory_probe::StaticMemoryProbe::new(
+                    5 * MB + 1, // deliberately not a whole number of MB
+                    6 * MB,
+                )
+                .with_swap_bytes(7 * MB),
+            ),
         );
 
         // Every numeric field is seeded to a distinct value so that a
@@ -871,6 +900,7 @@ mod tests {
         daemon.state.disk_bytes_evicted = 17 * MB; // gc_evicted_mb
         daemon.state.chunk_index_entries = 18;
         daemon.state.disk_writes_active = 19;
+        daemon.state.mem_cache_writes_active = 20;
 
         let events = capture_events(|| daemon.log_memory_sample());
         let sample = find_memory_sample(&events)
@@ -883,6 +913,7 @@ mod tests {
         let expected: &[(&str, &str)] = &[
             ("rss_mb", "5"),
             ("vm_mb", "6"),
+            ("swap_mb", "7"),  // StaticMemoryProbe::with_swap_bytes
             ("threads", "42"), // StaticMemoryProbe::new fixes threads at 42
             ("tiles_done", "10"),
             ("encodes_active", "11"),
@@ -894,6 +925,7 @@ mod tests {
             ("gc_evicted_mb", "17"),
             ("chunk_index_entries", "18"),
             ("disk_writes_active", "19"),
+            ("mem_cache_writes_active", "20"),
         ];
 
         for (field, value) in expected {
@@ -938,6 +970,55 @@ mod tests {
         assert!(
             find_memory_sample(&events).is_none(),
             "no \"Memory sample\" event may be emitted when the probe is unavailable"
+        );
+    }
+
+    // =========================================================================
+    // rss_bytes == 0 guard (minor fix a)
+    //
+    // A `Some(sample)` with `rss_bytes == 0` must be treated exactly like a
+    // `None` sample: it is the observable signature of the memory-stats init
+    // race described on `MEMORY_STATS_INIT` in memory_probe.rs. Without this
+    // guard, that race would silently emit `rss_mb=0` — a plausible-looking
+    // but wrong reading — instead of latching the same "unavailable" path
+    // that `None` takes.
+    // =========================================================================
+
+    #[test]
+    fn memory_sample_is_skipped_when_rss_bytes_is_zero() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::new(
+                0,
+                6 * 1024 * 1024,
+            )),
+        );
+
+        assert!(!daemon.memory_probe_failed);
+        daemon.log_memory_sample();
+        assert!(
+            daemon.memory_probe_failed,
+            "a zeroed rss_bytes sample must be treated as unavailable, latching the warn-once flag"
+        );
+    }
+
+    #[test]
+    fn memory_sample_emits_no_event_when_rss_bytes_is_zero() {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut daemon = MetricsDaemon::with_memory_probe(
+            rx,
+            std::sync::Arc::new(crate::metrics::memory_probe::StaticMemoryProbe::new(
+                0,
+                6 * 1024 * 1024,
+            )),
+        );
+
+        let events = capture_events(|| daemon.log_memory_sample());
+
+        assert!(
+            find_memory_sample(&events).is_none(),
+            "no \"Memory sample\" event may be emitted when rss_bytes is zero"
         );
     }
 
