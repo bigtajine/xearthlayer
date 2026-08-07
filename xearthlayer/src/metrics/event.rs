@@ -108,6 +108,16 @@ pub enum MetricEvent {
         bytes: u64,
     },
 
+    /// Update the current chunk LRU index entry count.
+    ///
+    /// Emitted by the chunk `DiskCacheProvider` after writes and evictions.
+    /// The index is a memory consumer in its own right — millions of entries on
+    /// a full cache — so it is tracked alongside the byte totals.
+    ChunkIndexEntriesUpdate {
+        /// Current number of entries in the chunk LRU index.
+        entries: u64,
+    },
+
     // =========================================================================
     // Memory Cache Events (tile-level, tracked in daemon)
     // =========================================================================
@@ -128,6 +138,21 @@ pub enum MetricEvent {
         /// Current size in bytes.
         bytes: u64,
     },
+
+    /// A fire-and-forget memory cache write operation started.
+    ///
+    /// Mirrors `DiskWriteStarted`/`DiskWriteCompleted` but for the memory-cache
+    /// spawn in `BuildAndCacheDdsTask`, which previously emitted no start/complete
+    /// pair at all — only `MemoryCacheSizeUpdate`, a size gauge that only moves
+    /// after `cache.put()` actually completes. A backlog concentrated in that
+    /// spawn (each task pinning its own ~11.2 MB DDS clone) would present as
+    /// rising RSS with both `disk_writes_active` and `chunk_index_entries` flat,
+    /// misreading as allocator retention (candidate 2) instead of the
+    /// fire-and-forget backlog (candidate 1). See issue #209.
+    MemCacheWriteStarted,
+
+    /// A fire-and-forget memory cache write operation completed.
+    MemCacheWriteCompleted,
 
     // =========================================================================
     // Job Lifecycle Events
@@ -218,9 +243,12 @@ impl MetricEvent {
             Self::DiskCacheEvicted { .. } => "disk_cache_evicted",
             Self::DiskCacheSizeUpdate { .. } => "disk_cache_size_update",
             Self::DdsDiskCacheSizeUpdate { .. } => "dds_disk_cache_size_update",
+            Self::ChunkIndexEntriesUpdate { .. } => "chunk_index_entries_update",
             Self::MemoryCacheHit { .. } => "memory_cache_hit",
             Self::MemoryCacheMiss { .. } => "memory_cache_miss",
             Self::MemoryCacheSizeUpdate { .. } => "memory_cache_size_update",
+            Self::MemCacheWriteStarted => "mem_cache_write_started",
+            Self::MemCacheWriteCompleted => "mem_cache_write_completed",
             Self::JobSubmitted { .. } => "job_submitted",
             Self::JobStarted => "job_started",
             Self::JobCompleted { .. } => "job_completed",
@@ -293,6 +321,18 @@ mod tests {
         assert_eq!(
             MetricEvent::DdsDiskCacheMiss { is_fuse: false }.event_type(),
             "dds_disk_cache_miss"
+        );
+    }
+
+    #[test]
+    fn test_mem_cache_write_event_types() {
+        assert_eq!(
+            MetricEvent::MemCacheWriteStarted.event_type(),
+            "mem_cache_write_started"
+        );
+        assert_eq!(
+            MetricEvent::MemCacheWriteCompleted.event_type(),
+            "mem_cache_write_completed"
         );
     }
 

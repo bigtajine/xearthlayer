@@ -256,6 +256,7 @@ impl DiskCacheProvider {
                 client.dds_disk_cache_size(size);
             } else {
                 client.disk_cache_size(size);
+                client.chunk_index_entries(self.lru_index.entry_count());
             }
         }
     }

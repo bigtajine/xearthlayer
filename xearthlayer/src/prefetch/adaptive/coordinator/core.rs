@@ -785,7 +785,7 @@ impl AdaptivePrefetchCoordinator {
         let (lat, lon) = position;
 
         if let Some(ref metadata) = plan.metadata {
-            tracing::info!(
+            tracing::debug!(
                 strategy = plan.strategy,
                 tiles = plan.tile_count(),
                 skipped_cached = plan.skipped_cached,
@@ -800,7 +800,7 @@ impl AdaptivePrefetchCoordinator {
                 "Prefetch plan calculated"
             );
         } else {
-            tracing::info!(
+            tracing::debug!(
                 strategy = plan.strategy,
                 tiles = plan.tile_count(),
                 estimated_ms = plan.estimated_completion_ms,

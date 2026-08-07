@@ -197,6 +197,12 @@ impl MetricsClient {
         self.send(MetricEvent::DdsDiskCacheSizeUpdate { bytes });
     }
 
+    /// Reports the current chunk LRU index entry count.
+    #[inline]
+    pub fn chunk_index_entries(&self, entries: u64) {
+        self.send(MetricEvent::ChunkIndexEntriesUpdate { entries });
+    }
+
     // =========================================================================
     // Memory Cache Events
     // =========================================================================
@@ -225,6 +231,21 @@ impl MetricsClient {
     #[inline]
     pub fn memory_cache_size(&self, bytes: u64) {
         self.send(MetricEvent::MemoryCacheSizeUpdate { bytes });
+    }
+
+    /// Records a fire-and-forget memory cache write starting.
+    ///
+    /// Mirrors `disk_write_started` for the memory-cache spawn in
+    /// `BuildAndCacheDdsTask`; see `MetricEvent::MemCacheWriteStarted`.
+    #[inline]
+    pub fn mem_cache_write_started(&self) {
+        self.send(MetricEvent::MemCacheWriteStarted);
+    }
+
+    /// Records a fire-and-forget memory cache write completing.
+    #[inline]
+    pub fn mem_cache_write_completed(&self) {
+        self.send(MetricEvent::MemCacheWriteCompleted);
     }
 
     // =========================================================================
@@ -435,6 +456,23 @@ mod tests {
         assert!(matches!(
             rx.recv().await,
             Some(MetricEvent::MemoryCacheSizeUpdate { bytes: 1_000_000 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_client_mem_cache_write_events() {
+        let (client, mut rx) = create_client();
+
+        client.mem_cache_write_started();
+        client.mem_cache_write_completed();
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(MetricEvent::MemCacheWriteStarted)
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(MetricEvent::MemCacheWriteCompleted)
         ));
     }
 

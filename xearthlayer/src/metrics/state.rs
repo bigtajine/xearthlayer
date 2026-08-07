@@ -140,7 +140,9 @@ pub struct AggregatedState {
     pub chunk_disk_cache_hits: u64,
     /// Chunk disk cache misses.
     pub chunk_disk_cache_misses: u64,
-    /// Active disk writes (chunks only — DDS writes don't emit write events).
+    /// Active disk writes across both tiers: chunk disk cache writes and
+    /// DDS disk cache writes both emit `DiskWriteStarted`/`DiskWriteCompleted`
+    /// and are counted here.
     pub disk_writes_active: u64,
     /// Total bytes written to chunk disk cache.
     pub chunk_disk_bytes_written: u64,
@@ -154,6 +156,8 @@ pub struct AggregatedState {
     pub disk_bytes_evicted: u64,
     /// Current chunk disk cache size in bytes (absolute value from LRU index).
     pub chunk_disk_cache_size_bytes: u64,
+    /// Current number of entries in the chunk disk cache LRU index.
+    pub chunk_index_entries: u64,
 
     // =========================================================================
     // DDS Disk Cache Metrics
@@ -187,6 +191,11 @@ pub struct AggregatedState {
     pub fuse_memory_cache_misses: u64,
     /// Current memory cache size in bytes.
     pub memory_cache_size_bytes: u64,
+    /// Fire-and-forget memory cache writes currently in flight (the spawn in
+    /// `BuildAndCacheDdsTask` that calls `MemoryCache::put`). Mirrors
+    /// `disk_writes_active` but for the memory-cache tier, which previously had
+    /// no in-flight gauge at all — see issue #209.
+    pub mem_cache_writes_active: u64,
 
     // =========================================================================
     // Job Metrics
@@ -267,6 +276,7 @@ impl AggregatedState {
             initial_disk_cache_bytes: 0,
             disk_bytes_evicted: 0,
             chunk_disk_cache_size_bytes: 0,
+            chunk_index_entries: 0,
             dds_disk_cache_hits: 0,
             dds_disk_cache_misses: 0,
             fuse_dds_disk_cache_hits: 0,
@@ -278,6 +288,7 @@ impl AggregatedState {
             fuse_memory_cache_hits: 0,
             fuse_memory_cache_misses: 0,
             memory_cache_size_bytes: 0,
+            mem_cache_writes_active: 0,
             jobs_submitted: 0,
             fuse_jobs_submitted: 0,
             jobs_completed: 0,
@@ -327,6 +338,7 @@ impl AggregatedState {
         self.fuse_memory_cache_hits = 0;
         self.fuse_memory_cache_misses = 0;
         self.memory_cache_size_bytes = 0;
+        self.mem_cache_writes_active = 0;
         self.jobs_submitted = 0;
         self.fuse_jobs_submitted = 0;
         self.jobs_completed = 0;

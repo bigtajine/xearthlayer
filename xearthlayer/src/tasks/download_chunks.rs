@@ -28,7 +28,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::JoinSet;
-use tracing::{debug, info, trace, warn, Instrument};
+use tracing::{debug, trace, warn, Instrument};
 
 /// Task that downloads all chunks for a tile.
 ///
@@ -358,7 +358,7 @@ where
                 let duration_us = download_start.elapsed().as_micros() as u64;
                 let bytes = data.len() as u64;
 
-                info!(
+                debug!(
                     provider = provider.name(),
                     global_row = global_row,
                     global_col = global_col,
