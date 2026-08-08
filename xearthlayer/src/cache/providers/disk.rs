@@ -37,6 +37,7 @@ use tracing::{debug, info, warn};
 use crate::cache::config::DiskProviderConfig;
 use crate::cache::lru_index::LruIndex;
 use crate::cache::traits::{BoxFuture, Cache, GcResult, ServiceCacheError};
+use crate::cache::DiskTier;
 use crate::metrics::MetricsClient;
 
 /// On-disk cache provider with LRU index tracking.
@@ -67,9 +68,9 @@ pub struct DiskCacheProvider {
     /// Optional metrics client for reporting cache size updates.
     metrics_client: Option<MetricsClient>,
 
-    /// Whether this provider serves the DDS tile tier (vs chunk tier).
+    /// Which disk cache tier this provider serves.
     /// Controls which metric event is emitted for size updates.
-    is_dds_tier: bool,
+    tier: DiskTier,
 }
 
 impl DiskCacheProvider {
@@ -106,7 +107,7 @@ impl DiskCacheProvider {
             lru_index,
             shutdown,
             metrics_client: config.metrics_client,
-            is_dds_tier: config.is_dds_tier,
+            tier: config.tier,
         });
 
         // Populate LRU index from disk
@@ -114,7 +115,7 @@ impl DiskCacheProvider {
             Ok(stats) => {
                 info!(
                     dir = %config.directory.display(),
-                    tier = if config.is_dds_tier { "dds" } else { "chunks" },
+                    tier = %config.tier,
                     files = stats.files_indexed,
                     skipped = stats.skipped_unparseable,
                     size_mb = stats.total_bytes / 1_000_000,
@@ -160,7 +161,7 @@ impl DiskCacheProvider {
             lru_index,
             shutdown,
             metrics_client: config.metrics_client,
-            is_dds_tier: config.is_dds_tier,
+            tier: config.tier,
         });
 
         info!(
@@ -244,7 +245,7 @@ impl DiskCacheProvider {
     /// When set, size updates emit `dds_disk_cache_size` metrics instead of
     /// `disk_cache_size`, allowing the TUI to correctly aggregate both tiers.
     pub fn set_dds_tier(&mut self) {
-        self.is_dds_tier = true;
+        self.tier = DiskTier::Dds;
     }
 
     /// Report current cache size to metrics, using the appropriate event
@@ -252,11 +253,12 @@ impl DiskCacheProvider {
     fn report_size_to_metrics(&self) {
         let size = self.lru_index.total_size();
         if let Some(ref client) = self.metrics_client {
-            if self.is_dds_tier {
-                client.dds_disk_cache_size(size);
-            } else {
-                client.disk_cache_size(size);
-                client.chunk_index_entries(self.lru_index.entry_count());
+            match self.tier {
+                DiskTier::Dds => client.dds_disk_cache_size(size),
+                DiskTier::Chunk => {
+                    client.disk_cache_size(size);
+                    client.chunk_index_entries(self.lru_index.entry_count());
+                }
             }
         }
     }
@@ -281,7 +283,7 @@ impl Cache for DiskCacheProvider {
                 key = %key_owned,
                 size,
                 path = %path.display(),
-                tier = if self.is_dds_tier { "dds" } else { "chunks" },
+                tier = %self.tier,
                 "Disk cache write starting"
             );
 
@@ -307,10 +309,13 @@ impl Cache for DiskCacheProvider {
             // Report authoritative cache size to metrics
             self.report_size_to_metrics();
 
-            if self.is_dds_tier {
-                debug!(key = %key_owned, size, path = %path.display(), "DDS disk cache write complete");
-            } else {
-                debug!(key = %key_owned, size, "Cache set");
+            match self.tier {
+                DiskTier::Dds => {
+                    debug!(key = %key_owned, size, path = %path.display(), "DDS disk cache write complete");
+                }
+                DiskTier::Chunk => {
+                    debug!(key = %key_owned, size, "Cache set");
+                }
             }
             Ok(())
         })
@@ -319,7 +324,7 @@ impl Cache for DiskCacheProvider {
     fn get(&self, key: &str) -> BoxFuture<'_, Result<Option<Vec<u8>>, ServiceCacheError>> {
         let path = self.key_path(key);
         let key_owned = key.to_string();
-        let is_dds = self.is_dds_tier;
+        let tier = self.tier;
 
         Box::pin(async move {
             match tokio::fs::read(&path).await {
@@ -330,7 +335,7 @@ impl Cache for DiskCacheProvider {
                         key = %key_owned,
                         size = data.len(),
                         path = %path.display(),
-                        tier = if is_dds { "dds" } else { "chunks" },
+                        tier = %tier,
                         "Disk cache hit"
                     );
                     Ok(Some(data))
@@ -344,7 +349,7 @@ impl Cache for DiskCacheProvider {
                     debug!(
                         key = %key_owned,
                         path = %path.display(),
-                        tier = if is_dds { "dds" } else { "chunks" },
+                        tier = %tier,
                         was_in_index,
                         "Disk cache miss — file not found"
                     );
@@ -354,7 +359,7 @@ impl Cache for DiskCacheProvider {
                     warn!(
                         key = %key_owned,
                         path = %path.display(),
-                        tier = if is_dds { "dds" } else { "chunks" },
+                        tier = %tier,
                         error = %e,
                         "Disk cache read error"
                     );
@@ -401,11 +406,11 @@ impl Cache for DiskCacheProvider {
         // produce at most a skipped plan entry that X-Plane later
         // requests via FUSE and properly generates.
         let in_index = self.lru_index.contains(key);
-        let is_dds = self.is_dds_tier;
+        let tier = self.tier;
         debug!(
             key = %key,
             in_index,
-            tier = if is_dds { "dds" } else { "chunks" },
+            tier = %tier,
             "Disk cache contains (index-only)"
         );
         Box::pin(async move { Ok(in_index) })
@@ -464,7 +469,7 @@ mod tests {
             gc_interval: Duration::from_secs(3600), // Not used anymore
             provider_name: "test".to_string(),
             metrics_client: None,
-            is_dds_tier: false,
+            tier: DiskTier::Chunk,
         };
 
         let provider = DiskCacheProvider::start(config).await.unwrap();
@@ -665,7 +670,7 @@ mod tests {
             gc_interval: Duration::from_secs(3600),
             provider_name: "test".to_string(),
             metrics_client: None,
-            is_dds_tier: false,
+            tier: DiskTier::Chunk,
         };
 
         // start() internally calls populate_from_disk()
@@ -706,7 +711,7 @@ mod tests {
                 gc_interval: Duration::from_secs(3600),
                 provider_name: "test".to_string(),
                 metrics_client: None,
-                is_dds_tier: false,
+                tier: DiskTier::Chunk,
             };
             let provider = DiskCacheProvider::start(config).await.unwrap();
 
@@ -722,7 +727,7 @@ mod tests {
                 gc_interval: Duration::from_secs(3600),
                 provider_name: "test".to_string(),
                 metrics_client: None,
-                is_dds_tier: false,
+                tier: DiskTier::Chunk,
             };
             let provider = DiskCacheProvider::start(config).await.unwrap();
 
