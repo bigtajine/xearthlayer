@@ -303,7 +303,6 @@ where
                     let metrics_for_dds = metrics.clone();
                     tokio::spawn(async move {
                         metrics_for_dds.disk_write_started();
-                        let write_start = Instant::now();
 
                         dds_disk
                             .put(
@@ -314,8 +313,7 @@ where
                             )
                             .await;
 
-                        let duration_us = write_start.elapsed().as_micros() as u64;
-                        metrics_for_dds.disk_write_completed(dds_bytes, duration_us);
+                        metrics_for_dds.disk_write_completed(dds_bytes, DD::TIER);
 
                         debug!(
                             tile = ?tile_for_disk,

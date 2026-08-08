@@ -447,7 +447,7 @@ where
 /// Spawns a fire-and-forget task to write chunk data to disk cache.
 ///
 /// Emits `disk_write_started` when beginning and `disk_write_completed`
-/// with byte count and duration when finished.
+/// with byte count when finished.
 fn spawn_cache_write<D>(
     disk_cache: Arc<D>,
     tile: TileCoord,
@@ -462,15 +462,13 @@ fn spawn_cache_write<D>(
     tokio::spawn(async move {
         // Track disk write started
         metrics.disk_write_started();
-        let start = Instant::now();
 
         let _ = disk_cache
             .put(tile.row, tile.col, tile.zoom, chunk_row, chunk_col, data)
             .await;
 
         // Track disk write completed
-        let duration_us = start.elapsed().as_micros() as u64;
-        metrics.disk_write_completed(bytes, duration_us);
+        metrics.disk_write_completed(bytes, D::TIER);
     });
 }
 

@@ -146,10 +146,10 @@ pub struct AggregatedState {
     pub disk_writes_active: u64,
     /// Total bytes written to chunk disk cache.
     pub chunk_disk_bytes_written: u64,
+    /// Total bytes written to DDS disk cache.
+    pub dds_disk_bytes_written: u64,
     /// Total bytes read from chunk disk cache (cache hits).
     pub chunk_disk_bytes_read: u64,
-    /// Total disk write time in microseconds.
-    pub disk_write_time_us: u64,
     /// Initial disk cache size (scanned on startup, not reset).
     pub initial_disk_cache_bytes: u64,
     /// Total bytes evicted from disk cache by the GC daemon.
@@ -271,8 +271,8 @@ impl AggregatedState {
             chunk_disk_cache_misses: 0,
             disk_writes_active: 0,
             chunk_disk_bytes_written: 0,
+            dds_disk_bytes_written: 0,
             chunk_disk_bytes_read: 0,
-            disk_write_time_us: 0,
             initial_disk_cache_bytes: 0,
             disk_bytes_evicted: 0,
             chunk_disk_cache_size_bytes: 0,
@@ -326,8 +326,8 @@ impl AggregatedState {
         self.chunk_disk_cache_misses = 0;
         self.disk_writes_active = 0;
         self.chunk_disk_bytes_written = 0;
+        self.dds_disk_bytes_written = 0;
         self.chunk_disk_bytes_read = 0;
-        self.disk_write_time_us = 0;
         self.dds_disk_cache_hits = 0;
         self.dds_disk_cache_misses = 0;
         self.fuse_dds_disk_cache_hits = 0;
@@ -372,8 +372,6 @@ pub const DEFAULT_HISTORY_CAPACITY: usize = 60;
 pub struct TimeSeriesHistory {
     /// Network throughput samples (bytes/sec).
     pub network_throughput: RingBuffer<f64>,
-    /// Disk throughput samples (bytes/sec).
-    pub disk_throughput: RingBuffer<f64>,
     /// Job completion rate samples (jobs/sec).
     pub job_rate: RingBuffer<f64>,
     /// FUSE request rate samples (requests/sec).
@@ -385,7 +383,6 @@ impl TimeSeriesHistory {
     pub fn new(capacity: usize) -> Self {
         Self {
             network_throughput: RingBuffer::new(capacity),
-            disk_throughput: RingBuffer::new(capacity),
             job_rate: RingBuffer::new(capacity),
             fuse_rate: RingBuffer::new(capacity),
         }
@@ -394,7 +391,6 @@ impl TimeSeriesHistory {
     /// Clears all time series data.
     pub fn clear(&mut self) {
         self.network_throughput.clear();
-        self.disk_throughput.clear();
         self.job_rate.clear();
         self.fuse_rate.clear();
     }
@@ -489,14 +485,11 @@ mod tests {
 
         history.network_throughput.push(1000.0);
         history.network_throughput.push(2000.0);
-        history.disk_throughput.push(500.0);
 
         assert_eq!(history.network_throughput.len(), 2);
         assert_eq!(history.network_throughput.last(), Some(2000.0));
-        assert_eq!(history.disk_throughput.len(), 1);
 
         history.clear();
         assert!(history.network_throughput.is_empty());
-        assert!(history.disk_throughput.is_empty());
     }
 }

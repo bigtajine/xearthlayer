@@ -14,6 +14,8 @@
 //! - Job events: per-job (one per tile request)
 //! - FUSE events: per-request
 
+use crate::cache::DiskTier;
+
 /// Events emitted by pipeline components to the metrics daemon.
 ///
 /// Each event represents an atomic occurrence that updates metrics state.
@@ -76,8 +78,8 @@ pub enum MetricEvent {
     DiskWriteCompleted {
         /// Number of bytes written.
         bytes: u64,
-        /// Time taken in microseconds.
-        duration_us: u64,
+        /// Which cache tier the bytes belong to.
+        tier: DiskTier,
     },
 
     /// Set the initial disk cache size (scanned on startup).
