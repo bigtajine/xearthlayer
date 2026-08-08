@@ -66,9 +66,6 @@ pub struct MetricsDaemon {
     /// Last bytes downloaded (for rate calculation).
     last_bytes_downloaded: u64,
 
-    /// Last disk bytes written (for rate calculation).
-    last_disk_bytes_written: u64,
-
     /// Last jobs completed (for rate calculation).
     last_jobs_completed: u64,
 
@@ -111,7 +108,6 @@ impl MetricsDaemon {
             shared_state,
             last_sample: Instant::now(),
             last_bytes_downloaded: 0,
-            last_disk_bytes_written: 0,
             last_jobs_completed: 0,
             last_fuse_completed: 0,
             memory_probe,
@@ -207,17 +203,12 @@ impl MetricsDaemon {
             MetricEvent::DiskWriteStarted => {
                 self.state.disk_writes_active += 1;
             }
-            MetricEvent::DiskWriteCompleted {
-                bytes,
-                duration_us,
-                tier,
-            } => {
+            MetricEvent::DiskWriteCompleted { bytes, tier } => {
                 self.state.disk_writes_active = self.state.disk_writes_active.saturating_sub(1);
                 match tier {
                     DiskTier::Chunk => self.state.chunk_disk_bytes_written += bytes,
                     DiskTier::Dds => self.state.dds_disk_bytes_written += bytes,
                 }
-                self.state.disk_write_time_us += duration_us;
             }
             MetricEvent::DiskCacheInitialSize { bytes } => {
                 self.state.initial_disk_cache_bytes = bytes;
@@ -414,17 +405,6 @@ impl MetricsDaemon {
             }
 
             self.last_bytes_downloaded = self.state.bytes_downloaded;
-
-            // Disk throughput (bytes/sec)
-            let total_disk_written = self
-                .state
-                .chunk_disk_bytes_written
-                .saturating_add(self.state.dds_disk_bytes_written);
-            let disk_delta = total_disk_written.saturating_sub(self.last_disk_bytes_written);
-            self.history
-                .disk_throughput
-                .push(disk_delta as f64 / elapsed);
-            self.last_disk_bytes_written = total_disk_written;
 
             // Job rate (jobs/sec)
             let jobs_delta = self
@@ -721,7 +701,6 @@ mod tests {
         daemon.sample_time_series();
 
         assert_eq!(daemon.history.network_throughput.len(), 1);
-        assert_eq!(daemon.history.disk_throughput.len(), 1);
         assert_eq!(daemon.history.job_rate.len(), 1);
 
         // Verify rates are non-zero
@@ -1036,7 +1015,6 @@ mod tests {
 
         daemon.process_event(MetricEvent::DiskWriteCompleted {
             bytes: 1_000,
-            duration_us: 50,
             tier: DiskTier::Chunk,
         });
 
@@ -1050,7 +1028,6 @@ mod tests {
 
         daemon.process_event(MetricEvent::DiskWriteCompleted {
             bytes: 11_174_016,
-            duration_us: 50,
             tier: DiskTier::Dds,
         });
 
@@ -1070,7 +1047,6 @@ mod tests {
 
         daemon.process_event(MetricEvent::DiskWriteCompleted {
             bytes: 1,
-            duration_us: 1,
             tier: DiskTier::Chunk,
         });
         assert_eq!(
@@ -1080,7 +1056,6 @@ mod tests {
 
         daemon.process_event(MetricEvent::DiskWriteCompleted {
             bytes: 1,
-            duration_us: 1,
             tier: DiskTier::Dds,
         });
         assert_eq!(

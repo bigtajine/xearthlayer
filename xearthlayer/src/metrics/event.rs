@@ -89,8 +89,6 @@ pub enum MetricEvent {
     DiskWriteCompleted {
         /// Number of bytes written.
         bytes: u64,
-        /// Time taken in microseconds.
-        duration_us: u64,
         /// Which cache tier the bytes belong to.
         tier: DiskTier,
     },
