@@ -1,6 +1,7 @@
 //! OptionalMetrics — extension trait for `Option<MetricsClient>`.
 
 use super::client::MetricsClient;
+use super::event::DiskTier;
 
 /// Extension trait for optional metrics client usage.
 ///
@@ -16,7 +17,7 @@ pub trait OptionalMetrics {
     fn dds_disk_cache_hit(&self, bytes: u64, is_fuse: bool);
     fn dds_disk_cache_miss(&self, is_fuse: bool);
     fn disk_write_started(&self);
-    fn disk_write_completed(&self, bytes: u64, duration_us: u64);
+    fn disk_write_completed(&self, bytes: u64, duration_us: u64, tier: DiskTier);
     fn disk_cache_initial_size(&self, bytes: u64);
     fn disk_cache_size(&self, bytes: u64);
     fn dds_disk_cache_size(&self, bytes: u64);
@@ -102,9 +103,9 @@ impl OptionalMetrics for Option<MetricsClient> {
     }
 
     #[inline]
-    fn disk_write_completed(&self, bytes: u64, duration_us: u64) {
+    fn disk_write_completed(&self, bytes: u64, duration_us: u64, tier: DiskTier) {
         if let Some(client) = self {
-            client.disk_write_completed(bytes, duration_us);
+            client.disk_write_completed(bytes, duration_us, tier);
         }
     }
 

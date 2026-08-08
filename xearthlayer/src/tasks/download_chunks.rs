@@ -22,7 +22,7 @@ use crate::executor::{
     ChunkProvider, ChunkResults, DiskCache, DownloadConfig, ResourceType, Task, TaskContext,
     TaskOutput, TaskResult,
 };
-use crate::metrics::{MetricsClient, OptionalMetrics};
+use crate::metrics::{DiskTier, MetricsClient, OptionalMetrics};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -470,7 +470,7 @@ fn spawn_cache_write<D>(
 
         // Track disk write completed
         let duration_us = start.elapsed().as_micros() as u64;
-        metrics.disk_write_completed(bytes, duration_us);
+        metrics.disk_write_completed(bytes, duration_us, DiskTier::Chunk);
     });
 }
 

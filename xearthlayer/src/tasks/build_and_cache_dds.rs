@@ -22,7 +22,7 @@ use crate::executor::{
     BlockingExecutor, ChunkResults, DdsDiskCache, MemoryCache, ResourceType, Task, TaskContext,
     TaskError, TaskOutput, TaskResult, TextureEncoderAsync,
 };
-use crate::metrics::OptionalMetrics;
+use crate::metrics::{DiskTier, OptionalMetrics};
 use image::{Rgba, RgbaImage};
 use std::future::Future;
 use std::pin::Pin;
@@ -315,7 +315,7 @@ where
                             .await;
 
                         let duration_us = write_start.elapsed().as_micros() as u64;
-                        metrics_for_dds.disk_write_completed(dds_bytes, duration_us);
+                        metrics_for_dds.disk_write_completed(dds_bytes, duration_us, DiskTier::Dds);
 
                         debug!(
                             tile = ?tile_for_disk,

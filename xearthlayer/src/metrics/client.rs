@@ -21,7 +21,7 @@
 //! client.chunk_disk_cache_hit(30_000);
 //! ```
 
-use super::event::MetricEvent;
+use super::event::{DiskTier, MetricEvent};
 use tokio::sync::mpsc;
 
 /// Client for emitting metric events to the metrics daemon.
@@ -151,9 +151,14 @@ impl MetricsClient {
     ///
     /// * `bytes` - Number of bytes written
     /// * `duration_us` - Time taken in microseconds
+    /// * `tier` - Which cache tier the bytes belong to
     #[inline]
-    pub fn disk_write_completed(&self, bytes: u64, duration_us: u64) {
-        self.send(MetricEvent::DiskWriteCompleted { bytes, duration_us });
+    pub fn disk_write_completed(&self, bytes: u64, duration_us: u64, tier: DiskTier) {
+        self.send(MetricEvent::DiskWriteCompleted {
+            bytes,
+            duration_us,
+            tier,
+        });
     }
 
     /// Sets the initial disk cache size (scanned on startup).
@@ -418,7 +423,7 @@ mod tests {
 
         client.chunk_disk_cache_hit(2048);
         client.chunk_disk_cache_miss();
-        client.disk_write_completed(2048, 1000);
+        client.disk_write_completed(2048, 1000, DiskTier::Chunk);
         client.disk_cache_size(9_000_000_000);
         client.memory_cache_hit(true);
         client.memory_cache_miss(false);
@@ -436,7 +441,8 @@ mod tests {
             rx.recv().await,
             Some(MetricEvent::DiskWriteCompleted {
                 bytes: 2048,
-                duration_us: 1000
+                duration_us: 1000,
+                tier: DiskTier::Chunk
             })
         ));
         assert!(matches!(

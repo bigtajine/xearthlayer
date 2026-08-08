@@ -13,7 +13,7 @@
 //! state through a shared `RwLock` handle that the daemon updates after
 //! processing events. This ensures reporters never block event processing.
 
-use super::event::MetricEvent;
+use super::event::{DiskTier, MetricEvent};
 use super::memory_probe::{MemoryProbe, ProcessMemoryProbe};
 use super::state::{AggregatedState, TimeSeriesHistory, DEFAULT_HISTORY_CAPACITY};
 use std::sync::{Arc, RwLock};
@@ -207,9 +207,16 @@ impl MetricsDaemon {
             MetricEvent::DiskWriteStarted => {
                 self.state.disk_writes_active += 1;
             }
-            MetricEvent::DiskWriteCompleted { bytes, duration_us } => {
+            MetricEvent::DiskWriteCompleted {
+                bytes,
+                duration_us,
+                tier,
+            } => {
                 self.state.disk_writes_active = self.state.disk_writes_active.saturating_sub(1);
-                self.state.chunk_disk_bytes_written += bytes;
+                match tier {
+                    DiskTier::Chunk => self.state.chunk_disk_bytes_written += bytes,
+                    DiskTier::Dds => self.state.dds_disk_bytes_written += bytes,
+                }
                 self.state.disk_write_time_us += duration_us;
             }
             MetricEvent::DiskCacheInitialSize { bytes } => {
@@ -1020,6 +1027,65 @@ mod tests {
         assert!(
             find_memory_sample(&events).is_none(),
             "no \"Memory sample\" event may be emitted when rss_bytes is zero"
+        );
+    }
+
+    #[test]
+    fn chunk_tier_write_credits_only_the_chunk_counter() {
+        let (mut daemon, _tx) = create_daemon();
+
+        daemon.process_event(MetricEvent::DiskWriteCompleted {
+            bytes: 1_000,
+            duration_us: 50,
+            tier: DiskTier::Chunk,
+        });
+
+        assert_eq!(daemon.state.chunk_disk_bytes_written, 1_000);
+        assert_eq!(daemon.state.dds_disk_bytes_written, 0);
+    }
+
+    #[test]
+    fn dds_tier_write_credits_only_the_dds_counter() {
+        let (mut daemon, _tx) = create_daemon();
+
+        daemon.process_event(MetricEvent::DiskWriteCompleted {
+            bytes: 11_174_016,
+            duration_us: 50,
+            tier: DiskTier::Dds,
+        });
+
+        assert_eq!(daemon.state.dds_disk_bytes_written, 11_174_016);
+        assert_eq!(daemon.state.chunk_disk_bytes_written, 0);
+    }
+
+    // Guards the cross-tier invariant the #209 memory telemetry depends on:
+    // disk_writes_active must count in-flight writes from BOTH tiers.
+    #[test]
+    fn both_tiers_decrement_the_shared_in_flight_gauge() {
+        let (mut daemon, _tx) = create_daemon();
+
+        daemon.process_event(MetricEvent::DiskWriteStarted);
+        daemon.process_event(MetricEvent::DiskWriteStarted);
+        assert_eq!(daemon.state.disk_writes_active, 2);
+
+        daemon.process_event(MetricEvent::DiskWriteCompleted {
+            bytes: 1,
+            duration_us: 1,
+            tier: DiskTier::Chunk,
+        });
+        assert_eq!(
+            daemon.state.disk_writes_active, 1,
+            "chunk completion must decrement"
+        );
+
+        daemon.process_event(MetricEvent::DiskWriteCompleted {
+            bytes: 1,
+            duration_us: 1,
+            tier: DiskTier::Dds,
+        });
+        assert_eq!(
+            daemon.state.disk_writes_active, 0,
+            "dds completion must decrement too"
         );
     }
 
