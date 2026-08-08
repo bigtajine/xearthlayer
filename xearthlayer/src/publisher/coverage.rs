@@ -67,32 +67,11 @@ pub struct CoverageConfig {
 
 impl Default for CoverageConfig {
     fn default() -> Self {
-        let mut region_colors = HashMap::new();
-        // Blue for NA (matches GeoJSON)
-        region_colors.insert("na".to_string(), (51, 136, 255, 180));
-        // Orange for EU (matches GeoJSON)
-        region_colors.insert("eu".to_string(), (255, 136, 0, 180));
-        // Tangerine for EU2 (Eastern Europe / Western Russia) — brighter than EU
-        region_colors.insert("eu2".to_string(), (255, 170, 0, 180));
-        // Green for SA
-        region_colors.insert("sa".to_string(), (0, 200, 83, 180));
-        // Purple for OC
-        region_colors.insert("oc".to_string(), (156, 39, 176, 180));
-        // Red for AS3 (Asia Part 3)
-        region_colors.insert("as3".to_string(), (255, 80, 80, 180));
-        // Green for AS (legacy/future Asia regions)
-        region_colors.insert("as".to_string(), (0, 200, 83, 180));
-        // Cyan for AF1 (North Africa)
-        region_colors.insert("af1".to_string(), (0, 188, 212, 180));
-        // Yellowish-green for AF/AF2 (Southern Africa)
-        region_colors.insert("af".to_string(), (180, 200, 80, 180));
-        region_colors.insert("af2".to_string(), (180, 200, 80, 180));
-
         Self {
             width: 1200,
             height: 600,
             padding: (20, 20),
-            region_colors,
+            region_colors: HashMap::new(),
             default_color: (100, 100, 100, 180),
             border_color: (0, 0, 0, 255),
             border_width: 0.5,
@@ -104,29 +83,11 @@ impl Default for CoverageConfig {
 impl CoverageConfig {
     /// Create a dark mode configuration with adjusted colors for visibility.
     pub fn dark() -> Self {
-        let mut region_colors = HashMap::new();
-        // Brighter colors for dark background
-        region_colors.insert("na".to_string(), (100, 180, 255, 200));
-        region_colors.insert("eu".to_string(), (255, 180, 100, 200));
-        // Tangerine for EU2 (dark mode) — brighter than EU
-        region_colors.insert("eu2".to_string(), (255, 200, 80, 200));
-        region_colors.insert("sa".to_string(), (100, 255, 150, 200));
-        region_colors.insert("oc".to_string(), (200, 100, 255, 200));
-        // Red for AS3 (Asia Part 3)
-        region_colors.insert("as3".to_string(), (255, 100, 100, 200));
-        // Green for AS (legacy/future Asia regions)
-        region_colors.insert("as".to_string(), (100, 255, 150, 200));
-        // Cyan for AF1 (North Africa - brighter for dark background)
-        region_colors.insert("af1".to_string(), (0, 220, 240, 200));
-        // Yellowish-green for AF/AF2 (Southern Africa - brighter for dark background)
-        region_colors.insert("af".to_string(), (210, 230, 120, 200));
-        region_colors.insert("af2".to_string(), (210, 230, 120, 200));
-
         Self {
             width: 1200,
             height: 600,
             padding: (20, 20),
-            region_colors,
+            region_colors: HashMap::new(),
             default_color: (150, 150, 150, 200),
             border_color: (80, 80, 80, 255),
             border_width: 0.3,
@@ -753,8 +714,9 @@ mod tests {
 
         assert_eq!(config.width, 1200);
         assert_eq!(config.height, 600);
-        assert!(config.region_colors.contains_key("na"));
-        assert!(config.region_colors.contains_key("eu"));
+        // Colours are no longer hardcoded; region_colors is populated by
+        // `with_regions` from `region_metadata.json`, not by `default()`.
+        assert!(config.region_colors.is_empty());
     }
 
     #[test]

@@ -420,6 +420,7 @@ impl PublisherService for MockPublisherService {
         &self,
         _packages_dir: &Path,
         _output_path: &Path,
+        _metadata_path: &Path,
         _width: u32,
         _height: u32,
         _dark: bool,
@@ -434,6 +435,7 @@ impl PublisherService for MockPublisherService {
         &self,
         _packages_dir: &Path,
         _output_path: &Path,
+        _metadata_path: &Path,
     ) -> Result<CoverageResult, CliError> {
         Ok(CoverageResult {
             total_tiles: 100,
