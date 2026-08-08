@@ -36,7 +36,7 @@ use std::time::Duration;
 use tokio::runtime::Handle;
 
 use crate::executor::DdsClient;
-use crate::fuse::{Fuse3PassthroughFS, MountHandle, SpawnedMountHandle};
+use crate::fuse::{MountHandle, PassthroughFS, SpawnedMountHandle};
 use crate::log::Logger;
 use crate::log_info;
 use crate::prefetch::TileRequestCallback;
@@ -142,8 +142,8 @@ impl FuseMountService {
     }
 
     /// Create a Fuse3PassthroughFS instance with the given configuration.
-    fn create_filesystem(config: &FuseMountConfig, source_path: PathBuf) -> Fuse3PassthroughFS {
-        let mut fs = Fuse3PassthroughFS::new(
+    fn create_filesystem(config: &FuseMountConfig, source_path: PathBuf) -> PassthroughFS {
+        let mut fs = PassthroughFS::new(
             source_path,
             Arc::clone(&config.dds_client),
             config.expected_dds_size,

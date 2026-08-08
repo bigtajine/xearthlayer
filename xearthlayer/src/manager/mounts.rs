@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::config::defaults::{DEFAULT_FUSE_CONGESTION_THRESHOLD, DEFAULT_FUSE_MAX_BACKGROUND};
 use crate::config::DiskIoProfile;
 use crate::executor::StorageConcurrencyLimiter;
-use crate::fuse::fuse3::Fuse3OrthoUnionFS;
+use crate::fuse::OrthoUnionFS;
 use crate::fuse::SpawnedMountHandle;
 use crate::geo_index::{DsfRegion, GeoIndex, PatchCoverage};
 use crate::metrics::TelemetrySnapshot;
@@ -471,7 +471,7 @@ impl MountManager {
         // Wire Scene Tracker channel for empirical scenery tracking
         // Wire FUSE kernel limits for concurrent background request control
         let mut ortho_union_fs =
-            Fuse3OrthoUnionFS::new((*index_for_prefetch).clone(), dds_client, expected_dds_size)
+            OrthoUnionFS::new((*index_for_prefetch).clone(), dds_client, expected_dds_size)
                 .with_geo_index(Arc::clone(&geo_index))
                 .with_dds_access_channel(dds_access_tx)
                 .with_scene_tracker_channel(scene_tracker_tx)

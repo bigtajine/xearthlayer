@@ -14,8 +14,31 @@
 
 use std::collections::HashSet;
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+
+/// Create a symlink to a directory (cross-platform).
+///
+/// On Windows this requires Developer Mode or an elevated process, since
+/// unprivileged symlink creation is disabled by default.
+#[cfg(target_os = "linux")]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(target_os = "windows")]
+fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_dir(target, link)
+}
+
+/// Create a symlink to a file (cross-platform). See [`symlink_dir`] for the
+/// Windows privilege caveat.
+#[cfg(target_os = "linux")]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(target_os = "windows")]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, link)
+}
 
 use crate::package::{self, PackageType};
 
@@ -86,7 +109,7 @@ fn create_overlay_symlink(
     }
 
     // Create the symlink
-    symlink(package_path, &symlink_path).map_err(|e| ManagerError::SymlinkFailed {
+    symlink_dir(package_path, &symlink_path).map_err(|e| ManagerError::SymlinkFailed {
         source: package_path.to_path_buf(),
         target: symlink_path.clone(),
         reason: e.to_string(),
@@ -740,11 +763,11 @@ mod tests {
         // Create stale per-region symlinks
         let fake_target = packages_dir.path().join("fake_na");
         fs::create_dir(&fake_target).unwrap();
-        symlink(&fake_target, scenery_dir.path().join("yzXEL_na_overlay")).unwrap();
+        symlink_dir(&fake_target, &scenery_dir.path().join("yzXEL_na_overlay")).unwrap();
 
         let fake_target_eu = packages_dir.path().join("fake_eu");
         fs::create_dir(&fake_target_eu).unwrap();
-        symlink(&fake_target_eu, scenery_dir.path().join("yzXEL_eu_overlay")).unwrap();
+        symlink_dir(&fake_target_eu, &scenery_dir.path().join("yzXEL_eu_overlay")).unwrap();
 
         assert!(consolidated.exists());
         assert!(scenery_dir.path().join("yzXEL_na_overlay").is_symlink());

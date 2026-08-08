@@ -18,6 +18,7 @@
 //! by ostree. This is the same signal `rpm-ostree` and `bootc` themselves
 //! use, so it stays correct as the ecosystem evolves.
 
+#[cfg(target_os = "linux")]
 use nix::sys::statvfs::statvfs;
 use std::io;
 use std::path::Path;
@@ -43,7 +44,8 @@ pub struct FilesystemInfo {
 
 /// Query capacity information for the filesystem containing `path`.
 ///
-/// Returns an `io::Error` if `path` doesn't exist or `statvfs(2)` fails.
+/// Returns an `io::Error` if `path` doesn't exist or the OS capacity query fails.
+#[cfg(target_os = "linux")]
 pub fn fs_info(path: &Path) -> io::Result<FilesystemInfo> {
     let stat = statvfs(path).map_err(|errno| io::Error::from_raw_os_error(errno as i32))?;
     // f_frsize is the fragment (allocation) size; on Linux it equals
@@ -58,11 +60,62 @@ pub fn fs_info(path: &Path) -> io::Result<FilesystemInfo> {
     })
 }
 
+/// Query capacity information for the filesystem containing `path`, via
+/// the native `GetDiskFreeSpaceExW` Win32 API.
+#[cfg(target_os = "windows")]
+pub fn fs_info(path: &Path) -> io::Result<FilesystemInfo> {
+    use std::os::windows::ffi::OsStrExt;
+
+    unsafe extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lpdirectoryname: *const u16,
+            lpfreebytesavailabletocaller: *mut u64,
+            lptotalnumberofbytes: *mut u64,
+            lptotalnumberoffreebytes: *mut u64,
+        ) -> i32;
+    }
+
+    if !path.exists() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "path does not exist"));
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut available_bytes: u64 = 0;
+    let mut total_bytes: u64 = 0;
+
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available_bytes,
+            &mut total_bytes,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(FilesystemInfo {
+        total_bytes,
+        available_bytes,
+    })
+}
+
 /// Returns `true` if the host appears to be an ostree-based atomic
 /// distribution (Bazzite, Silverblue, Kinoite, SteamOS, Fedora Atomic,
 /// etc.) where the rootfs is intentionally sized to its content.
+///
+/// Always `false` on Windows — the ostree/atomic-distro concept is Linux-only.
 pub fn is_immutable_os() -> bool {
-    Path::new(OSTREE_BOOTED_MARKER).exists()
+    #[cfg(target_os = "linux")]
+    {
+        Path::new(OSTREE_BOOTED_MARKER).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 #[cfg(test)]

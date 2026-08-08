@@ -378,6 +378,10 @@ pub fn run(args: RunArgs) -> Result<(), CliError> {
 /// to the imagery CDN, disk cache file handles, and FUSE file descriptors
 /// for X-Plane's open textures. This raises the soft limit to the hard
 /// limit (no root required), matching what the system administrator allows.
+///
+/// No-op on Windows: there's no equivalent per-process FD soft/hard limit
+/// concept (the OS-level handle limit is effectively unbounded in practice).
+#[cfg(target_os = "linux")]
 fn raise_fd_limit() {
     match rlimit::Resource::NOFILE.get() {
         Ok((soft, hard)) if soft < hard => {
@@ -399,6 +403,9 @@ fn raise_fd_limit() {
         }
     }
 }
+
+#[cfg(not(target_os = "linux"))]
+fn raise_fd_limit() {}
 
 /// Display warning if configuration file needs upgrade.
 ///

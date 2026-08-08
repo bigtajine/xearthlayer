@@ -49,6 +49,8 @@ tokio-util = "0.7"
 dialoguer = "0.11"
 console = "0.15"
 indicatif = "0.17"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 rlimit = "0.10"
 
 [features]
