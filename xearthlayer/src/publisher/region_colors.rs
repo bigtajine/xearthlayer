@@ -26,20 +26,15 @@ pub struct RegionMetadata {
 
 /// One region's metadata entry.
 ///
-/// Only `color` is required — it is the only field the coverage map uses.
-/// `name` and `coverage` exist for the website legend and are optional here so
-/// the map does not fail on a region that omits them. Unknown fields are
-/// ignored, so the website can add keys without breaking map generation.
+/// Only `color` is modelled — it is the only field the coverage map uses. The
+/// real file also carries `name` and `coverage` for the website legend, which
+/// reads the JSON directly and never goes through this type. Unknown fields are
+/// ignored (no `deny_unknown_fields`), so those keys parse harmlessly and the
+/// website can add more without breaking map generation.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegionEntry {
     /// CSS colour name or hex string (e.g. "crimson", "#ffaa00").
     pub color: String,
-    /// Human-readable region name (website legend only).
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Human-readable coverage description (website legend only).
-    #[serde(default)]
-    pub coverage: Option<String>,
 }
 
 impl RegionMetadata {
@@ -181,6 +176,17 @@ mod tests {
                 color
             );
         }
+    }
+
+    // name/coverage exist in the real file for the website legend but are not
+    // fields on RegionEntry. Serde ignores them, so the map is unaffected.
+    #[test]
+    fn website_only_fields_are_ignored() {
+        let f = write_temp(
+            r#"{"regions":{"NA":{"name":"North America","coverage":"US","color":"blue"}}}"#,
+        );
+        let md = RegionMetadata::load(f.path()).unwrap();
+        assert_eq!(md.regions.get("NA").unwrap().color, "blue");
     }
 
     #[test]
