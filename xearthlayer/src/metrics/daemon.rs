@@ -843,10 +843,8 @@ mod tests {
         };
         let subscriber = tracing_subscriber::registry().with(layer);
         tracing::subscriber::with_default(subscriber, f);
-        std::sync::Arc::try_unwrap(events)
-            .expect("no other references to the capture buffer should remain")
-            .into_inner()
-            .unwrap()
+        let captured = events.lock().unwrap().clone();
+        captured
     }
 
     /// Finds the first captured event whose message is "Memory sample".
