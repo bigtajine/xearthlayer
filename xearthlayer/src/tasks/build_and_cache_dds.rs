@@ -17,7 +17,6 @@
 //! Returns the DDS data via `TaskOutput` key "dds_data" (`Vec<u8>`).
 //! Cache write is fire-and-forget (spawned async task).
 
-use crate::cache::DiskTier;
 use crate::coord::TileCoord;
 use crate::executor::{
     BlockingExecutor, ChunkResults, DdsDiskCache, MemoryCache, ResourceType, Task, TaskContext,
@@ -314,7 +313,7 @@ where
                             )
                             .await;
 
-                        metrics_for_dds.disk_write_completed(dds_bytes, DiskTier::Dds);
+                        metrics_for_dds.disk_write_completed(dds_bytes, DD::TIER);
 
                         debug!(
                             tile = ?tile_for_disk,

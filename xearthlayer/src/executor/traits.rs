@@ -31,6 +31,7 @@
 //! └─────────────────────────────────────────────────────────────┘
 //! ```
 
+use crate::cache::DiskTier;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -200,6 +201,10 @@ pub trait MemoryCache: Send + Sync + 'static {
 /// Disk cache stores individual JPEG chunks for persistence across sessions.
 /// Operations are async since they involve disk I/O.
 pub trait DiskCache: Send + Sync + 'static {
+    /// The cache tier this trait writes to. Derived rather than declared at
+    /// call sites so a wrong tier cannot be typed by hand — see issue #216.
+    const TIER: DiskTier = DiskTier::Chunk;
+
     /// Gets a chunk from the cache.
     ///
     /// # Arguments
@@ -241,6 +246,10 @@ pub trait DiskCache: Send + Sync + 'static {
 /// Uses the same tile-level key space as [`MemoryCache`] but backed by disk
 /// storage with LRU eviction.
 pub trait DdsDiskCache: Send + Sync + 'static {
+    /// The cache tier this trait writes to. Derived rather than declared at
+    /// call sites so a wrong tier cannot be typed by hand — see issue #216.
+    const TIER: DiskTier = DiskTier::Dds;
+
     /// Gets a DDS tile from the disk cache.
     ///
     /// Returns `Some(data)` if the tile is cached on disk, `None` otherwise.
@@ -602,5 +611,16 @@ mod tests {
         // Use futures::executor for a simple sync test
         let result = futures::executor::block_on(future);
         assert_eq!(result.unwrap(), 42);
+    }
+
+    use crate::cache::{DdsDiskCacheBridge, DiskCacheBridge};
+
+    // Pins the tier to the trait rather than to a hand-typed argument at each
+    // call site. Asserted against the bridges actually wired in production,
+    // not stubs.
+    #[test]
+    fn cache_traits_carry_their_own_tier() {
+        assert_eq!(<DiskCacheBridge as DiskCache>::TIER, DiskTier::Chunk);
+        assert_eq!(<DdsDiskCacheBridge as DdsDiskCache>::TIER, DiskTier::Dds);
     }
 }

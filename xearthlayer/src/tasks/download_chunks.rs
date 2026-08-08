@@ -17,7 +17,6 @@
 //!
 //! Produces `TaskOutput` with key "chunks" containing `ChunkResults`.
 
-use crate::cache::DiskTier;
 use crate::coord::TileCoord;
 use crate::executor::{
     ChunkProvider, ChunkResults, DiskCache, DownloadConfig, ResourceType, Task, TaskContext,
@@ -469,7 +468,7 @@ fn spawn_cache_write<D>(
             .await;
 
         // Track disk write completed
-        metrics.disk_write_completed(bytes, DiskTier::Chunk);
+        metrics.disk_write_completed(bytes, D::TIER);
     });
 }
 
