@@ -21,6 +21,7 @@ use staticmap::tools::Tool;
 use staticmap::{lat_to_y, lon_to_x, Bounds, StaticMapBuilder};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, PixmapMut, Shader, Stroke, Transform};
 
+use super::region_colors::{brighten, resolve, RegionMetadata};
 use super::{PublishError, PublishResult};
 
 /// Map style/theme for the base layer.
@@ -131,6 +132,28 @@ impl CoverageConfig {
             border_width: 0.3,
             style: MapStyle::Dark,
         }
+    }
+
+    /// Populates `region_colors` from region metadata.
+    ///
+    /// Keys are lowercased because metadata uses uppercase codes ("AS1") while
+    /// package directories on disk use lowercase ("as1"). Dark configs brighten
+    /// each colour and use alpha 200; light configs use alpha 180.
+    ///
+    /// Whether to brighten is decided by `self.style`, so a caller cannot pair
+    /// a dark config with light colours.
+    pub fn with_regions(mut self, metadata: &RegionMetadata) -> PublishResult<Self> {
+        let is_dark = self.style == MapStyle::Dark;
+        let alpha = if is_dark { 200 } else { 180 };
+
+        let mut colors = HashMap::new();
+        for (code, entry) in &metadata.regions {
+            let rgb = resolve(code, &entry.color)?;
+            let rgb = if is_dark { brighten(rgb) } else { rgb };
+            colors.insert(code.to_lowercase(), (rgb.0, rgb.1, rgb.2, alpha));
+        }
+        self.region_colors = colors;
+        Ok(self)
     }
 }
 
@@ -665,6 +688,52 @@ impl CoverageMapGenerator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata_fixture() -> crate::publisher::RegionMetadata {
+        serde_json::from_str(
+            r#"{"regions":{
+                "NA":{"color":"blue"},
+                "AS1":{"color":"firebrick"}
+            }}"#,
+        )
+        .unwrap()
+    }
+
+    // Metadata keys are uppercase ("AS1"); package region codes on disk are
+    // lowercase ("as1"). Without normalisation every lookup would miss.
+    #[test]
+    fn with_regions_lowercases_keys() {
+        let config = CoverageConfig::default()
+            .with_regions(&metadata_fixture())
+            .unwrap();
+        assert!(config.region_colors.contains_key("na"));
+        assert!(config.region_colors.contains_key("as1"));
+        assert!(!config.region_colors.contains_key("NA"));
+    }
+
+    #[test]
+    fn light_config_uses_metadata_colour_with_alpha_180() {
+        let config = CoverageConfig::default()
+            .with_regions(&metadata_fixture())
+            .unwrap();
+        assert_eq!(config.region_colors["na"], (0, 0, 255, 180));
+    }
+
+    #[test]
+    fn dark_config_brightens_and_uses_alpha_200() {
+        let config = CoverageConfig::dark()
+            .with_regions(&metadata_fixture())
+            .unwrap();
+        assert_eq!(config.region_colors["na"], (89, 89, 255, 200));
+    }
+
+    #[test]
+    fn with_regions_propagates_unknown_colour_error() {
+        let md: crate::publisher::RegionMetadata =
+            serde_json::from_str(r#"{"regions":{"EU2":{"color":"tangerine"}}}"#).unwrap();
+        let err = CoverageConfig::default().with_regions(&md).unwrap_err();
+        assert!(format!("{}", err).contains("EU2"));
+    }
 
     #[test]
     fn test_filled_rect_extent() {
