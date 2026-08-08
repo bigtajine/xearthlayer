@@ -240,14 +240,6 @@ impl DiskCacheProvider {
         (max as f64 * 0.80) as u64
     }
 
-    /// Mark this provider as serving the DDS tile cache tier.
-    ///
-    /// When set, size updates emit `dds_disk_cache_size` metrics instead of
-    /// `disk_cache_size`, allowing the TUI to correctly aggregate both tiers.
-    pub fn set_dds_tier(&mut self) {
-        self.tier = DiskTier::Dds;
-    }
-
     /// Report current cache size to metrics, using the appropriate event
     /// based on whether this is the DDS or chunk tier.
     fn report_size_to_metrics(&self) {

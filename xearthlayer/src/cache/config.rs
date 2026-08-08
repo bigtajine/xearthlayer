@@ -183,7 +183,7 @@ impl DiskProviderConfig {
                 gc_interval: *gc_interval,
                 provider_name: provider_name.clone(),
                 metrics_client: None,
-                tier: DiskTier::Chunk,
+                tier: config.tier,
             }),
             ProviderConfig::Memory { .. } => None,
         }
@@ -295,5 +295,19 @@ mod tests {
         )
         .as_dds_tier();
         assert_eq!(dds.tier, DiskTier::Dds);
+    }
+
+    #[test]
+    fn from_service_config_propagates_dds_tier() {
+        let config = ServiceCacheConfig::disk(
+            1_000_000,
+            PathBuf::from("/tmp/xel-tier-test"),
+            Duration::from_secs(60),
+            "bing".to_string(),
+        )
+        .as_dds_tier();
+
+        let disk_config = DiskProviderConfig::from_service_config(&config).unwrap();
+        assert_eq!(disk_config.tier, DiskTier::Dds);
     }
 }
