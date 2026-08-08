@@ -299,7 +299,7 @@ xearthlayer publish version --region <code> --bump <type>  # Manage versions
 xearthlayer publish release --region <code> --metadata-url <url>  # Release
 xearthlayer publish status                  # Show release status
 xearthlayer publish validate                # Validate repository
-xearthlayer publish coverage [--dark] [--geojson] [-o <file>]  # Generate coverage map
+xearthlayer publish coverage [--dark] [--geojson] [-o <file>] [--metadata <path>]  # Generate coverage map
 xearthlayer publish dedupe --region <code> [--priority <mode>] [--tile <lat,lon>] [--dry-run]  # Remove overlapping ZL tiles
 xearthlayer publish gaps --region <code> [--tile <lat,lon>] [--format <fmt>] [-o <file>]  # Analyze coverage gaps
 ```
