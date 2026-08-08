@@ -21,7 +21,8 @@
 //! client.chunk_disk_cache_hit(30_000);
 //! ```
 
-use super::event::{DiskTier, MetricEvent};
+use super::event::MetricEvent;
+use crate::cache::DiskTier;
 use tokio::sync::mpsc;
 
 /// Client for emitting metric events to the metrics daemon.

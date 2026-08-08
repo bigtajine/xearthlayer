@@ -14,18 +14,7 @@
 //! - Job events: per-job (one per tile request)
 //! - FUSE events: per-request
 
-/// Which disk cache tier a write belongs to.
-///
-/// Chunk-tier writes are small and frequent (~14 KB, thousands per second);
-/// DDS-tier writes are large and rare (11.17 MB, a few per second). Attributing
-/// bytes to a tier keeps `chunk_disk_bytes_written` honest — see issue #216.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DiskTier {
-    /// The chunk disk cache.
-    Chunk,
-    /// The DDS tile disk cache.
-    Dds,
-}
+use crate::cache::DiskTier;
 
 /// Events emitted by pipeline components to the metrics daemon.
 ///

@@ -17,12 +17,13 @@
 //! Returns the DDS data via `TaskOutput` key "dds_data" (`Vec<u8>`).
 //! Cache write is fire-and-forget (spawned async task).
 
+use crate::cache::DiskTier;
 use crate::coord::TileCoord;
 use crate::executor::{
     BlockingExecutor, ChunkResults, DdsDiskCache, MemoryCache, ResourceType, Task, TaskContext,
     TaskError, TaskOutput, TaskResult, TextureEncoderAsync,
 };
-use crate::metrics::{DiskTier, OptionalMetrics};
+use crate::metrics::OptionalMetrics;
 use image::{Rgba, RgbaImage};
 use std::future::Future;
 use std::pin::Pin;

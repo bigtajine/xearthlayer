@@ -13,9 +13,10 @@
 //! state through a shared `RwLock` handle that the daemon updates after
 //! processing events. This ensures reporters never block event processing.
 
-use super::event::{DiskTier, MetricEvent};
+use super::event::MetricEvent;
 use super::memory_probe::{MemoryProbe, ProcessMemoryProbe};
 use super::state::{AggregatedState, TimeSeriesHistory, DEFAULT_HISTORY_CAPACITY};
+use crate::cache::DiskTier;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;

@@ -17,12 +17,13 @@
 //!
 //! Produces `TaskOutput` with key "chunks" containing `ChunkResults`.
 
+use crate::cache::DiskTier;
 use crate::coord::TileCoord;
 use crate::executor::{
     ChunkProvider, ChunkResults, DiskCache, DownloadConfig, ResourceType, Task, TaskContext,
     TaskOutput, TaskResult,
 };
-use crate::metrics::{DiskTier, MetricsClient, OptionalMetrics};
+use crate::metrics::{MetricsClient, OptionalMetrics};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

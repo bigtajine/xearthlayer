@@ -79,7 +79,7 @@ pub use clients::{ChunkCacheClient, TileCacheClient};
 // Legacy exports (backward compatibility)
 pub use memory::MemoryCache;
 pub use stats::{CacheStatistics, CacheStats};
-pub use types::{CacheError, CacheKey, DiskCacheConfig, MemoryCacheConfig};
+pub use types::{CacheError, CacheKey, DiskCacheConfig, DiskTier, MemoryCacheConfig};
 
 // Re-export path utilities for convenience
 pub use path::{

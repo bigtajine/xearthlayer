@@ -1,7 +1,7 @@
 //! OptionalMetrics — extension trait for `Option<MetricsClient>`.
 
 use super::client::MetricsClient;
-use super::event::DiskTier;
+use crate::cache::DiskTier;
 
 /// Extension trait for optional metrics client usage.
 ///
