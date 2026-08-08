@@ -146,6 +146,8 @@ pub struct AggregatedState {
     pub disk_writes_active: u64,
     /// Total bytes written to chunk disk cache.
     pub chunk_disk_bytes_written: u64,
+    /// Total bytes written to DDS disk cache.
+    pub dds_disk_bytes_written: u64,
     /// Total bytes read from chunk disk cache (cache hits).
     pub chunk_disk_bytes_read: u64,
     /// Total disk write time in microseconds.
@@ -271,6 +273,7 @@ impl AggregatedState {
             chunk_disk_cache_misses: 0,
             disk_writes_active: 0,
             chunk_disk_bytes_written: 0,
+            dds_disk_bytes_written: 0,
             chunk_disk_bytes_read: 0,
             disk_write_time_us: 0,
             initial_disk_cache_bytes: 0,
@@ -326,6 +329,7 @@ impl AggregatedState {
         self.chunk_disk_cache_misses = 0;
         self.disk_writes_active = 0;
         self.chunk_disk_bytes_written = 0;
+        self.dds_disk_bytes_written = 0;
         self.chunk_disk_bytes_read = 0;
         self.disk_write_time_us = 0;
         self.dds_disk_cache_hits = 0;

@@ -731,6 +731,7 @@ impl MountManager {
             chunk_disk_cache_hit_rate: 0.0,
             chunk_disk_cache_size_bytes: 0,
             chunk_disk_bytes_written: 0,
+            dds_disk_bytes_written: 0,
             chunk_disk_bytes_read: 0,
             encodes_completed: 0,
             encodes_active: 0,
@@ -802,6 +803,9 @@ impl MountManager {
             total.chunk_disk_bytes_written = total
                 .chunk_disk_bytes_written
                 .max(snapshot.chunk_disk_bytes_written);
+            total.dds_disk_bytes_written = total
+                .dds_disk_bytes_written
+                .max(snapshot.dds_disk_bytes_written);
             total.dds_disk_bytes_read = total.dds_disk_bytes_read.max(snapshot.dds_disk_bytes_read);
             total.chunk_disk_bytes_read = total
                 .chunk_disk_bytes_read

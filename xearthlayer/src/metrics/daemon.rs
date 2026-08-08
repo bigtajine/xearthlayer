@@ -409,14 +409,15 @@ impl MetricsDaemon {
             self.last_bytes_downloaded = self.state.bytes_downloaded;
 
             // Disk throughput (bytes/sec)
-            let disk_delta = self
+            let total_disk_written = self
                 .state
                 .chunk_disk_bytes_written
-                .saturating_sub(self.last_disk_bytes_written);
+                .saturating_add(self.state.dds_disk_bytes_written);
+            let disk_delta = total_disk_written.saturating_sub(self.last_disk_bytes_written);
             self.history
                 .disk_throughput
                 .push(disk_delta as f64 / elapsed);
-            self.last_disk_bytes_written = self.state.chunk_disk_bytes_written;
+            self.last_disk_bytes_written = total_disk_written;
 
             // Job rate (jobs/sec)
             let jobs_delta = self
