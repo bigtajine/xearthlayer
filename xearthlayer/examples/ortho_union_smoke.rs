@@ -92,19 +92,28 @@ async fn main() {
 
     let fs_handler = OrthoUnionFS::new(index, dds_client, 11_174_016);
 
-    println!("Mounting consolidated ortho union at K:\\ ...");
+    // Mount onto an existing empty NTFS folder rather than a drive letter —
+    // this is what manager::mounts does for real, joining the mount under
+    // X-Plane's Custom Scenery directory as `.../zzXEL_ortho`.
+    let mount_root = root.join("Custom Scenery");
+    fs::create_dir_all(mount_root.join("zzXEL_ortho")).expect("create mount folder");
+    let mountpoint = mount_root.join("zzXEL_ortho");
+    let mountpoint_str = mountpoint.to_str().expect("mountpoint is valid utf-8");
+
+    println!("Mounting consolidated ortho union at folder {mountpoint_str} ...");
     let mount = fs_handler
-        .mount_spawned("K:\\")
+        .mount_spawned(mountpoint_str)
         .await
         .expect("mount should succeed");
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    let dsf = fs::read("K:\\Earth nav data\\+40-080\\+40-074.dsf").expect("read passthrough DSF");
+    let dsf = fs::read(mountpoint.join("Earth nav data").join("+40-080").join("+40-074.dsf"))
+        .expect("read passthrough DSF");
     assert_eq!(dsf, b"fake dsf payload");
     println!("PASS: passthrough DSF read through union index: {} bytes", dsf.len());
 
-    let entries: Vec<String> = fs::read_dir("K:\\")
+    let entries: Vec<String> = fs::read_dir(&mountpoint)
         .expect("readdir root")
         .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().to_string()))
         .collect();
@@ -112,7 +121,8 @@ async fn main() {
     assert!(entries.contains(&"terrain".to_string()));
     println!("PASS: root directory listing from union index: {entries:?}");
 
-    let dds_data = fs::read("K:\\terrain\\100000_125184_BI18.dds").expect("read virtual dds file");
+    let dds_data = fs::read(mountpoint.join("terrain").join("100000_125184_BI18.dds"))
+        .expect("read virtual dds file");
     assert_eq!(&dds_data[0..4], b"DDS ");
     assert_eq!(dds_data.len(), 11_174_016);
     println!("PASS: virtual DDS generation via union index: {} bytes", dds_data.len());

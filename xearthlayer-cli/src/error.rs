@@ -57,11 +57,19 @@ impl CliError {
             CliError::Serve(_) => {
                 eprintln!();
                 eprintln!("Common issues:");
-                eprintln!("  1. FUSE not installed: sudo apt install fuse (Linux)");
-                eprintln!("  2. Permissions: You may need to add your user to 'fuse' group");
-                eprintln!(
-                    "  3. Mountpoint in use: Try unmounting with: fusermount -u <mountpoint>"
-                );
+                #[cfg(target_os = "linux")]
+                {
+                    eprintln!("  1. FUSE not installed: sudo apt install fuse (Linux)");
+                    eprintln!("  2. Permissions: You may need to add your user to 'fuse' group");
+                    eprintln!(
+                        "  3. Mountpoint in use: Try unmounting with: fusermount -u <mountpoint>"
+                    );
+                }
+                #[cfg(target_os = "windows")]
+                {
+                    eprintln!("  1. Dokan driver not installed: winget install dokan-dev.Dokany");
+                    eprintln!("  2. Drive letter in use: pick a free one, or unmount with: net use <drive>: /delete");
+                }
             }
             CliError::Publish(_) => {
                 eprintln!();
