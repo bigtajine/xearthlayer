@@ -10,13 +10,12 @@
 //! generation blocks on a captured [`tokio::runtime::Handle`] rather than
 //! `.await`-ing directly.
 //!
-//! ponytail: [`OrthoUnionFS`] (the consolidated multi-package mount used in
-//! production by `manager::mounts`) is still a stub returning "not
-//! implemented" — this only wires up the simpler single-directory
-//! [`PassthroughFS`]. Upgrade path: same `FileSystemHandler` pattern, source
-//! path resolution from `OrthoUnionIndex` instead of a single `source_dir`.
-//! ponytail: no request coalescing (unlike the Linux fuse3 impl) — add a
-//! `RequestCoalescer` here if concurrent duplicate requests become a problem.
+//! [`OrthoUnionFS`] is the Windows counterpart of the Linux fuse3
+//! `Fuse3OrthoUnionFS` (the consolidated multi-package mount `manager::mounts`
+//! actually uses in production): it resolves virtual paths against
+//! [`OrthoUnionIndex`] instead of a single `source_dir`, with the same
+//! geospatial patch-region filtering, request coalescing, and prefetch/scene
+//! tracker event wiring as the Linux implementation.
 
 use std::fs;
 use std::future::Future;
@@ -44,11 +43,14 @@ use winapi::um::winnt::{
 
 use crate::coord::TileCoord;
 use crate::executor::DdsClient;
-use crate::fuse::{get_default_placeholder, parse_dds_filename, validate_dds_or_placeholder, DdsFilename};
-use crate::geo_index::GeoIndex;
-use crate::ortho_union::OrthoUnionIndex;
-use crate::prefetch::{DdsAccessEvent as CoreDdsAccessEvent, TileRequestCallback};
-use crate::scene_tracker::FuseAccessEvent;
+use crate::fuse::coalesce::{CoalesceResult, CoalescedResult, RequestCoalescer};
+use crate::fuse::{
+    get_default_placeholder, parse_dds_filename, validate_dds_or_placeholder, DdsFilename,
+};
+use crate::geo_index::{DsfRegion, GeoIndex, PatchCoverage};
+use crate::ortho_union::{OrthoSource, OrthoUnionIndex};
+use crate::prefetch::{DdsAccessEvent as CoreDdsAccessEvent, DsfTileCoord, TileRequestCallback};
+use crate::scene_tracker::{DdsTileCoord, FuseAccessEvent};
 
 pub type MountResult<T> = Result<T, MountError>;
 
@@ -70,12 +72,33 @@ fn chunk_to_tile_coords(coords: &DdsFilename) -> TileCoord {
     }
 }
 
+/// Perform the actual DDS request (without coalescing), used both directly
+/// and as the "first requester" path when coalescing is enabled.
+async fn do_request(dds_client: &Arc<dyn DdsClient>, timeout: Duration, tile: TileCoord) -> Vec<u8> {
+    let cancellation = CancellationToken::new();
+    let rx = dds_client.request_dds(tile, cancellation.clone());
+
+    match tokio::time::timeout(timeout, rx).await {
+        Ok(Ok(response)) => response.data,
+        _ => {
+            cancellation.cancel();
+            get_default_placeholder()
+        }
+    }
+}
+
 /// Block on an async DDS generation request from a synchronous Dokan callback thread.
+///
+/// Mirrors `DdsRequestor::request_dds_impl` on Linux: optional request
+/// coalescing (dedup concurrent requests for the same tile), timeout with
+/// placeholder fallback, and DDS validation before returning to X-Plane.
+#[allow(clippy::too_many_arguments)]
 fn request_dds_blocking(
     runtime: &tokio::runtime::Handle,
     dds_client: &Arc<dyn DdsClient>,
     timeout: Duration,
     tile_request_callback: Option<&TileRequestCallback>,
+    coalescer: Option<&Arc<RequestCoalescer>>,
     coords: &DdsFilename,
 ) -> Vec<u8> {
     let tile = chunk_to_tile_coords(coords);
@@ -83,16 +106,22 @@ fn request_dds_blocking(
         callback(tile);
     }
 
-    let cancellation = CancellationToken::new();
-    let rx = dds_client.request_dds(tile, cancellation.clone());
-
     let data = runtime.block_on(async {
-        match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(response)) => response.data,
-            _ => {
-                cancellation.cancel();
-                get_default_placeholder()
+        if let Some(coalescer) = coalescer {
+            match coalescer.register(tile) {
+                CoalesceResult::Coalesced(mut rx) => match tokio::time::timeout(timeout, rx.recv()).await {
+                    Ok(Ok(result)) => result.into_data(),
+                    _ => get_default_placeholder(),
+                },
+                CoalesceResult::NewRequest { tile, .. } => {
+                    let start = std::time::Instant::now();
+                    let data = do_request(dds_client, timeout, tile).await;
+                    coalescer.complete(tile, CoalescedResult::new(data.clone(), false, start.elapsed()));
+                    data
+                }
             }
+        } else {
+            do_request(dds_client, timeout, tile).await
         }
     });
 
@@ -192,11 +221,11 @@ impl PassthroughFS {
     }
 }
 
-impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
+impl FileSystemHandler<'static, 'static> for PassthroughFS {
     type Context = FileContext;
 
     fn create_file(
-        &'h self,
+        &'static self,
         file_name: &U16CStr,
         _security_context: &dokan_sys::DOKAN_IO_SECURITY_CONTEXT,
         _desired_access: ACCESS_MASK,
@@ -204,7 +233,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
         _share_access: u32,
         _create_disposition: u32,
         _create_options: u32,
-        _info: &mut OperationInfo<'c, 'h, Self>,
+        _info: &mut OperationInfo<'static, 'static, Self>,
     ) -> OperationResult<CreateFileInfo<Self::Context>> {
         let relative = to_relative_path(file_name);
         let full_path = self.source_dir.join(&relative);
@@ -241,10 +270,10 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
     }
 
     fn get_file_information(
-        &'h self,
+        &'static self,
         _file_name: &U16CStr,
-        _info: &OperationInfo<'c, 'h, Self>,
-        context: &'c Self::Context,
+        _info: &OperationInfo<'static, 'static, Self>,
+        context: &'static Self::Context,
     ) -> OperationResult<FileInfo> {
         match context {
             FileContext::Directory => {
@@ -260,11 +289,11 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
     }
 
     fn find_files(
-        &'h self,
+        &'static self,
         file_name: &U16CStr,
         mut fill_find_data: impl FnMut(&FindData) -> FillDataResult,
-        _info: &OperationInfo<'c, 'h, Self>,
-        _context: &'c Self::Context,
+        _info: &OperationInfo<'static, 'static, Self>,
+        _context: &'static Self::Context,
     ) -> OperationResult<()> {
         let relative = to_relative_path(file_name);
         let dir_path = self.source_dir.join(&relative);
@@ -297,12 +326,12 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
     }
 
     fn read_file(
-        &'h self,
+        &'static self,
         _file_name: &U16CStr,
         offset: i64,
         buffer: &mut [u8],
-        _info: &OperationInfo<'c, 'h, Self>,
-        context: &'c Self::Context,
+        _info: &OperationInfo<'static, 'static, Self>,
+        context: &'static Self::Context,
     ) -> OperationResult<u32> {
         match context {
             FileContext::Directory => Err(STATUS_ACCESS_DENIED),
@@ -319,6 +348,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
                     &self.dds_client,
                     self.timeout,
                     self.tile_request_callback.as_ref(),
+                    None,
                     coords,
                 );
                 let offset = offset as usize;
@@ -333,7 +363,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
         }
     }
 
-    fn get_disk_free_space(&'h self, _info: &OperationInfo<'c, 'h, Self>) -> OperationResult<DiskSpaceInfo> {
+    fn get_disk_free_space(&'static self, _info: &OperationInfo<'static, 'static, Self>) -> OperationResult<DiskSpaceInfo> {
         match crate::system::filesystem::fs_info(&self.source_dir) {
             Ok(info) => Ok(DiskSpaceInfo {
                 byte_count: info.total_bytes,
@@ -344,7 +374,7 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
         }
     }
 
-    fn get_volume_information(&'h self, _info: &OperationInfo<'c, 'h, Self>) -> OperationResult<VolumeInfo> {
+    fn get_volume_information(&'static self, _info: &OperationInfo<'static, 'static, Self>) -> OperationResult<VolumeInfo> {
         Ok(VolumeInfo {
             name: U16CString::from_str("XEarthLayer").unwrap_or_default(),
             serial_number: 0x5845_4C31, // "XEL1"
@@ -361,8 +391,11 @@ impl<'c, 'h: 'c> FileSystemHandler<'c, 'h> for PassthroughFS {
 /// mount, so the handler is leaked to obtain a `'static` reference (one leak per
 /// mount, for the process lifetime of that mount — acceptable for a long-running
 /// daemon that mounts a small, fixed number of scenery packs).
-fn spawn_mount(mountpoint: &str, handler: PassthroughFS) -> MountResult<SpawnedMountHandle> {
-    let handler: &'static PassthroughFS = Box::leak(Box::new(handler));
+fn spawn_mount<H>(mountpoint: &str, handler: H) -> MountResult<SpawnedMountHandle>
+where
+    H: FileSystemHandler<'static, 'static> + Send + Sync + 'static,
+{
+    let handler: &'static H = Box::leak(Box::new(handler));
     let mount_point = U16CString::from_str(mountpoint)
         .map_err(|e| MountError::InvalidPath(e.to_string()))?;
     let mount_point: &'static U16CString = Box::leak(Box::new(mount_point));
@@ -374,12 +407,12 @@ fn spawn_mount(mountpoint: &str, handler: PassthroughFS) -> MountResult<SpawnedM
     let join_handle = std::thread::spawn(move || {
         dokan::init();
 
-        let options = MountOptions {
+        let options: &'static MountOptions = Box::leak(Box::new(MountOptions {
             flags: MountFlags::WRITE_PROTECT,
             ..Default::default()
-        };
+        }));
 
-        let mut mounter = FileSystemMounter::new(handler, mount_point, &options);
+        let mut mounter = FileSystemMounter::new(handler, mount_point, options);
         let file_system = match mounter.mount() {
             Ok(fs) => fs,
             Err(e) => {
@@ -417,6 +450,9 @@ fn spawn_mount(mountpoint: &str, handler: PassthroughFS) -> MountResult<SpawnedM
 }
 
 pub struct MountHandle {
+    // Never read directly, but owning it keeps the mount alive and wires up
+    // SpawnedMountHandle's unmount-on-drop when this handle is dropped.
+    #[allow(dead_code)]
     spawned: SpawnedMountHandle,
 }
 
@@ -467,47 +503,53 @@ impl Drop for SpawnedMountHandle {
 }
 
 // =============================================================================
-// OrthoUnionFS - not yet ported (see module docs)
+// OrthoUnionFS - consolidated multi-package mount (production path)
 // =============================================================================
 
-fn not_implemented() -> MountError {
-    MountError::MountFailed(
-        "Dokan OrthoUnionFS (consolidated multi-package mount) is not implemented yet — \
-         only the single-directory PassthroughFS is wired up so far."
-            .to_string(),
-    )
+/// Consolidated ortho union filesystem, backed by Dokan.
+///
+/// Windows counterpart of the Linux fuse3 `Fuse3OrthoUnionFS`: merges all ortho
+/// sources (patches + regional packages) into a single virtual view via
+/// [`OrthoUnionIndex`], with patch sources taking priority in geo-filtered
+/// regions and DDS textures generated on demand for cache misses.
+pub struct OrthoUnionFS {
+    index: Arc<OrthoUnionIndex>,
+    geo_index: Option<Arc<GeoIndex>>,
+    dds_client: Arc<dyn DdsClient>,
+    expected_dds_size: u64,
+    timeout: Duration,
+    tile_request_callback: Option<TileRequestCallback>,
+    request_coalescer: Arc<RequestCoalescer>,
+    dds_access_tx: Option<tokio::sync::mpsc::UnboundedSender<CoreDdsAccessEvent>>,
+    scene_tracker_tx: Option<tokio::sync::mpsc::UnboundedSender<FuseAccessEvent>>,
+    fuse_max_background: Option<u16>,
+    fuse_congestion_threshold: Option<u16>,
+    runtime: tokio::runtime::Handle,
 }
 
-pub struct OrthoUnionFS {
-    #[allow(dead_code)]
-    index: OrthoUnionIndex,
-    #[allow(dead_code)]
-    dds_client: Arc<dyn DdsClient>,
-    #[allow(dead_code)]
-    expected_dds_size: usize,
-    #[allow(dead_code)]
-    geo_index: Option<Arc<GeoIndex>>,
-    #[allow(dead_code)]
-    dds_access_tx: Option<tokio::sync::mpsc::UnboundedSender<CoreDdsAccessEvent>>,
-    #[allow(dead_code)]
-    scene_tracker_tx: Option<tokio::sync::mpsc::UnboundedSender<FuseAccessEvent>>,
-    #[allow(dead_code)]
-    fuse_max_background: Option<u16>,
-    #[allow(dead_code)]
-    fuse_congestion_threshold: Option<u16>,
+/// Context associated with an open file/directory handle in [`OrthoUnionFS`].
+pub enum OrthoFileContext {
+    /// Root, or a virtual directory with no single backing path (union of sources).
+    VirtualDirectory,
+    RealFile(PathBuf),
+    VirtualDds(DdsFilename),
 }
 
 impl OrthoUnionFS {
     pub fn new(index: OrthoUnionIndex, dds_client: Arc<dyn DdsClient>, expected_dds_size: usize) -> Self {
         Self {
-            index,
-            dds_client,
-            expected_dds_size,
+            index: Arc::new(index),
             geo_index: None,
+            dds_client,
+            expected_dds_size: expected_dds_size as u64,
+            timeout: Duration::from_secs(30),
+            tile_request_callback: None,
+            request_coalescer: Arc::new(RequestCoalescer::new()),
             dds_access_tx: None,
             scene_tracker_tx: None,
             fuse_max_background: None,
             fuse_congestion_threshold: None,
+            runtime: tokio::runtime::Handle::current(),
         }
     }
 
@@ -532,7 +574,20 @@ impl OrthoUnionFS {
         self
     }
 
+    /// ponytail: metrics client isn't wired into the Windows coalescer path
+    /// (only used to report coalesced-request counts on Linux). Add if
+    /// Windows-side FUSE metrics become worth tracking separately.
     pub fn with_metrics(self, _metrics: crate::metrics::MetricsClient) -> Self {
+        self
+    }
+
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    pub fn with_tile_request_callback(mut self, callback: TileRequestCallback) -> Self {
+        self.tile_request_callback = Some(callback);
         self
     }
 
@@ -542,11 +597,253 @@ impl OrthoUnionFS {
         self
     }
 
-    pub async fn mount(self, _mountpoint: &str) -> MountResult<MountHandle> {
-        Err(not_implemented())
+    pub fn index(&self) -> &OrthoUnionIndex {
+        &self.index
     }
 
-    pub async fn mount_spawned(self, _mountpoint: &str) -> MountResult<SpawnedMountHandle> {
-        Err(not_implemented())
+    /// Check if a scenery filename falls in a geo-filtered (patch-owned) region.
+    fn is_geo_filtered(&self, filename: &str) -> bool {
+        let Some(geo_index) = self.geo_index.as_ref() else {
+            return false;
+        };
+        DsfTileCoord::from_scenery_filename(filename)
+            .map(|dsf| {
+                let region = DsfRegion::new(dsf.lat, dsf.lon);
+                geo_index.contains::<PatchCoverage>(&region)
+            })
+            .unwrap_or(false)
+    }
+
+    /// Resolve a lazy path with geospatial awareness (patches first in patched regions).
+    fn resolve_lazy_geo(&self, virtual_path: &std::path::Path, filename: &str) -> Option<PathBuf> {
+        if self.is_geo_filtered(filename) {
+            self.index
+                .resolve_lazy_filtered(virtual_path, |s: &OrthoSource| s.is_patch())
+                .or_else(|| self.index.resolve_lazy(virtual_path))
+        } else {
+            self.index.resolve_lazy(virtual_path)
+        }
+    }
+
+    pub async fn mount(self, mountpoint: &str) -> MountResult<MountHandle> {
+        self.mount_spawned(mountpoint)
+            .await
+            .map(|spawned| MountHandle { spawned })
+    }
+
+    pub async fn mount_spawned(self, mountpoint: &str) -> MountResult<SpawnedMountHandle> {
+        spawn_mount(mountpoint, self)
+    }
+}
+
+fn virtual_dir_file_info() -> FileInfo {
+    let now = SystemTime::now();
+    FileInfo {
+        attributes: FILE_ATTRIBUTE_DIRECTORY,
+        creation_time: now,
+        last_access_time: now,
+        last_write_time: now,
+        file_size: 0,
+        number_of_links: 1,
+        file_index: 0,
+    }
+}
+
+impl FileSystemHandler<'static, 'static> for OrthoUnionFS {
+    type Context = OrthoFileContext;
+
+    fn create_file(
+        &'static self,
+        file_name: &U16CStr,
+        _security_context: &dokan_sys::DOKAN_IO_SECURITY_CONTEXT,
+        _desired_access: ACCESS_MASK,
+        _file_attributes: u32,
+        _share_access: u32,
+        _create_disposition: u32,
+        _create_options: u32,
+        _info: &mut OperationInfo<'static, 'static, Self>,
+    ) -> OperationResult<CreateFileInfo<Self::Context>> {
+        let virtual_path = to_relative_path(file_name);
+        let filename = virtual_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Root or a virtual union directory (no single backing path).
+        if virtual_path.as_os_str().is_empty() || self.index.is_directory(&virtual_path) {
+            return Ok(CreateFileInfo {
+                context: OrthoFileContext::VirtualDirectory,
+                is_dir: true,
+                new_file_created: false,
+            });
+        }
+
+        // Real file indexed at build time.
+        if let Some(source) = self.index.resolve(&virtual_path) {
+            return Ok(CreateFileInfo {
+                context: OrthoFileContext::RealFile(source.real_path.clone()),
+                is_dir: false,
+                new_file_created: false,
+            });
+        }
+
+        // Lazy resolution for terrain/textures directories (geospatial-aware).
+        if let Some(real_path) = self.resolve_lazy_geo(&virtual_path, &filename) {
+            let is_dir = fs::metadata(&real_path).map(|m| m.is_dir()).unwrap_or(false);
+            return Ok(CreateFileInfo {
+                context: OrthoFileContext::RealFile(real_path),
+                is_dir,
+                new_file_created: false,
+            });
+        }
+
+        // DDS generation, with the water-mask guard: if a PNG water mask
+        // exists for this name, defer to it instead of generating imagery.
+        if filename.ends_with(".dds") {
+            let png_name = filename.replace(".dds", ".png");
+            let png_path = virtual_path.with_file_name(&png_name);
+            if self.resolve_lazy_geo(&png_path, &png_name).is_some() {
+                return Err(STATUS_OBJECT_NAME_NOT_FOUND);
+            }
+
+            if let Ok(coords) = parse_dds_filename(&filename) {
+                return Ok(CreateFileInfo {
+                    context: OrthoFileContext::VirtualDds(coords),
+                    is_dir: false,
+                    new_file_created: false,
+                });
+            }
+        }
+
+        Err(STATUS_OBJECT_NAME_NOT_FOUND)
+    }
+
+    fn get_file_information(
+        &'static self,
+        _file_name: &U16CStr,
+        _info: &OperationInfo<'static, 'static, Self>,
+        context: &'static Self::Context,
+    ) -> OperationResult<FileInfo> {
+        match context {
+            OrthoFileContext::VirtualDirectory => Ok(virtual_dir_file_info()),
+            OrthoFileContext::RealFile(path) => {
+                let metadata = fs::metadata(path).map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+                Ok(metadata_to_file_info(&metadata))
+            }
+            OrthoFileContext::VirtualDds(_) => Ok(virtual_dds_file_info(self.expected_dds_size)),
+        }
+    }
+
+    fn find_files(
+        &'static self,
+        file_name: &U16CStr,
+        mut fill_find_data: impl FnMut(&FindData) -> FillDataResult,
+        _info: &OperationInfo<'static, 'static, Self>,
+        _context: &'static Self::Context,
+    ) -> OperationResult<()> {
+        let virtual_path = to_relative_path(file_name);
+
+        for dir_entry in self.index.list_directory(&virtual_path) {
+            let Ok(name) = U16CString::from_os_str(&dir_entry.name) else {
+                continue;
+            };
+            let now = system_time_or_now(Ok(dir_entry.mtime));
+            let find_data = FindData {
+                attributes: if dir_entry.is_dir {
+                    FILE_ATTRIBUTE_DIRECTORY
+                } else {
+                    FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_READONLY
+                },
+                creation_time: now,
+                last_access_time: now,
+                last_write_time: now,
+                file_size: dir_entry.size,
+                file_name: name,
+            };
+            let _ = fill_find_data(&find_data);
+        }
+
+        Ok(())
+    }
+
+    fn read_file(
+        &'static self,
+        _file_name: &U16CStr,
+        offset: i64,
+        buffer: &mut [u8],
+        _info: &OperationInfo<'static, 'static, Self>,
+        context: &'static Self::Context,
+    ) -> OperationResult<u32> {
+        match context {
+            OrthoFileContext::VirtualDirectory => Err(STATUS_ACCESS_DENIED),
+            OrthoFileContext::RealFile(path) => {
+                let mut file = fs::File::open(path).map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+                file.seek(SeekFrom::Start(offset as u64))
+                    .map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+                let read = file.read(buffer).map_err(|_| STATUS_OBJECT_NAME_NOT_FOUND)?;
+                Ok(read as u32)
+            }
+            OrthoFileContext::VirtualDds(coords) => {
+                // Fire-and-forget prefetch/scene-tracker notifications, same as Linux.
+                if let Some(ref tx) = self.dds_access_tx {
+                    if let Some(dsf_tile) =
+                        DsfTileCoord::from_dds_filename(&format!("{}.dds", coords))
+                    {
+                        let _ = tx.send(CoreDdsAccessEvent::new(dsf_tile));
+                    }
+                }
+                if let Some(ref tx) = self.scene_tracker_tx {
+                    let tile = DdsTileCoord::new(coords.row, coords.col, coords.zoom);
+                    let _ = tx.send(FuseAccessEvent::new(tile));
+                }
+
+                let data = request_dds_blocking(
+                    &self.runtime,
+                    &self.dds_client,
+                    self.timeout,
+                    self.tile_request_callback.as_ref(),
+                    Some(&self.request_coalescer),
+                    coords,
+                );
+                let offset = offset as usize;
+                if offset >= data.len() {
+                    return Ok(0);
+                }
+                let end = std::cmp::min(offset + buffer.len(), data.len());
+                let n = end - offset;
+                buffer[..n].copy_from_slice(&data[offset..end]);
+                Ok(n as u32)
+            }
+        }
+    }
+
+    fn get_disk_free_space(
+        &'static self,
+        _info: &OperationInfo<'static, 'static, Self>,
+    ) -> OperationResult<DiskSpaceInfo> {
+        // ponytail: reports free space for the current directory rather than a
+        // specific source volume (the union has no single backing disk) —
+        // matches the Linux fuse3 statfs stub's use of fixed placeholder values.
+        match crate::system::filesystem::fs_info(std::path::Path::new(".")) {
+            Ok(info) => Ok(DiskSpaceInfo {
+                byte_count: info.total_bytes,
+                free_byte_count: info.available_bytes,
+                available_byte_count: info.available_bytes,
+            }),
+            Err(_) => Err(STATUS_ACCESS_DENIED),
+        }
+    }
+
+    fn get_volume_information(
+        &'static self,
+        _info: &OperationInfo<'static, 'static, Self>,
+    ) -> OperationResult<VolumeInfo> {
+        Ok(VolumeInfo {
+            name: U16CString::from_str("XEarthLayer").unwrap_or_default(),
+            serial_number: 0x5845_4C32, // "XEL2"
+            max_component_length: 255,
+            fs_flags: 0,
+            fs_name: U16CString::from_str("NTFS").unwrap_or_default(),
+        })
     }
 }
