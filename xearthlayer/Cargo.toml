@@ -60,7 +60,11 @@ rlimit = "0.10"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 dokan = "0.3"
+dokan-sys = "0.3"
+widestring = "0.4"
+winapi = { version = "0.3", features = ["winnt", "ntstatus"] }
 winreg = "0.52"
+junction = "1.2"
 
 [features]
 profiling = ["tracing-chrome"]

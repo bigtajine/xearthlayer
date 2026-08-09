@@ -327,13 +327,18 @@ congestion_threshold = {}
 }
 
 /// Convert path to string, collapsing home dir to ~.
+///
+/// Always writes forward slashes: on Windows, `Path::display()` renders `\`,
+/// which the `ini` crate's reader interprets as an escape sequence
+/// (`\U`, `\x` etc.), corrupting the value on load. Forward slashes are
+/// accepted by `PathBuf::from` on both platforms.
 fn path_to_string(path: &Path) -> String {
     if let Some(home) = dirs::home_dir() {
         if let Ok(stripped) = path.strip_prefix(&home) {
-            return format!("~/{}", stripped.display());
+            return format!("~/{}", stripped.display()).replace('\\', "/");
         }
     }
-    path.display().to_string()
+    path.display().to_string().replace('\\', "/")
 }
 
 #[cfg(test)]

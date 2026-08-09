@@ -18,26 +18,59 @@ use std::path::{Path, PathBuf};
 
 /// Create a symlink to a directory (cross-platform).
 ///
-/// On Windows this requires Developer Mode or an elevated process, since
-/// unprivileged symlink creation is disabled by default.
+/// On Windows this uses an NTFS junction instead of a true symlink: junctions
+/// are functionally equivalent for read-only overlay use (X-Plane just needs
+/// to see through the directory) but, unlike `symlink_dir`, require no
+/// elevated process or Developer Mode — `SeCreateSymbolicLinkPrivilege` is
+/// otherwise denied to standard user accounts.
 #[cfg(target_os = "linux")]
 fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 #[cfg(target_os = "windows")]
 fn symlink_dir(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_dir(target, link)
+    junction::create(target, link)
 }
 
-/// Create a symlink to a file (cross-platform). See [`symlink_dir`] for the
-/// Windows privilege caveat.
+/// Create a symlink to a file (cross-platform).
+///
+/// # Windows privilege caveat
+///
+/// Junctions only support directories, so file-level links try a true
+/// symlink first. On a non-elevated, non-Developer-Mode machine that's
+/// denied (`SeCreateSymbolicLinkPrivilege`), so this falls back to a
+/// hardlink (same volume, no privilege required, and — since these are
+/// read-only DSF overlays — behaviorally equivalent), then to a plain copy
+/// if the link and target are on different volumes.
 #[cfg(target_os = "linux")]
 fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, link)
 }
 #[cfg(target_os = "windows")]
 fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
-    std::os::windows::fs::symlink_file(target, link)
+    // `SeCreateSymbolicLinkPrivilege` denial surfaces as raw OS error 1314,
+    // which Rust doesn't map to `ErrorKind::PermissionDenied` — fall back on
+    // any symlink failure rather than matching a specific error kind.
+    if std::os::windows::fs::symlink_file(target, link).is_err() {
+        if fs::hard_link(target, link).is_err() {
+            fs::copy(target, link)?;
+        }
+    }
+    Ok(())
+}
+
+/// Remove a symlink/junction entry, whether it points to a directory or a file.
+///
+/// `fs::remove_file` fails on Windows for directory-type reparse points
+/// (`symlink_dir` targets and junctions) — they must go through
+/// `fs::remove_dir`, which removes the reparse point itself without
+/// touching the target's contents.
+fn remove_symlink_entry(path: &Path) -> std::io::Result<()> {
+    if path.is_dir() {
+        fs::remove_dir(path)
+    } else {
+        fs::remove_file(path)
+    }
 }
 
 use crate::package::{self, PackageType};
@@ -88,13 +121,13 @@ fn create_overlay_symlink(
         // Check if it's already our symlink
         if is_xearthlayer_symlink(&symlink_path)? {
             // Remove old symlink and recreate
-            fs::remove_file(&symlink_path).map_err(|e| ManagerError::WriteFailed {
+            remove_symlink_entry(&symlink_path).map_err(|e| ManagerError::WriteFailed {
                 path: symlink_path.clone(),
                 source: e,
             })?;
         } else if symlink_path.is_symlink() {
             // It's a symlink but not ours - remove it anyway (might be stale)
-            fs::remove_file(&symlink_path).map_err(|e| ManagerError::WriteFailed {
+            remove_symlink_entry(&symlink_path).map_err(|e| ManagerError::WriteFailed {
                 path: symlink_path.clone(),
                 source: e,
             })?;
@@ -167,7 +200,7 @@ pub fn remove_overlay_symlink(region: &str, custom_scenery_path: &Path) -> Manag
     }
 
     // Remove the symlink
-    fs::remove_file(&symlink_path).map_err(|e| ManagerError::WriteFailed {
+    remove_symlink_entry(&symlink_path).map_err(|e| ManagerError::WriteFailed {
         path: symlink_path,
         source: e,
     })?;
@@ -298,7 +331,7 @@ fn cleanup_all_per_region_overlay_symlinks(custom_scenery_path: &Path) {
         {
             let path = entry.path();
             if path.is_symlink() {
-                match fs::remove_file(&path) {
+                match remove_symlink_entry(&path) {
                     Ok(()) => {
                         tracing::info!(name = %name_str, "Removed stale per-region overlay symlink")
                     }
@@ -813,12 +846,14 @@ mod tests {
         // Verify folder structure
         let consolidated_path = scenery_dir.path().join(CONSOLIDATED_OVERLAY_NAME);
         assert!(consolidated_path.exists());
+        // On Windows without SeCreateSymbolicLinkPrivilege, `symlink()` falls
+        // back to a hardlink/copy — just verify the file made it across.
         assert!(consolidated_path
             .join("Earth nav data/+30-120/+33-119.dsf")
-            .is_symlink());
+            .exists());
         assert!(consolidated_path
             .join("Earth nav data/+30-120/+34-118.dsf")
-            .is_symlink());
+            .exists());
     }
 
     #[test]
