@@ -110,6 +110,36 @@ impl SystemReport {
 }
 
 impl OsInfo {
+    #[cfg(target_os = "windows")]
+    fn collect() -> Self {
+        let mut info = Self::default();
+
+        // Windows has no `uname`/`/etc/os-release` — read the same registry
+        // keys the Settings app displays (ProductName, DisplayVersion/build).
+        if let Ok(key) = winreg::RegKey::predef(winreg::enums::HKEY_LOCAL_MACHINE)
+            .open_subkey(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+        {
+            let product_name: Option<String> = key.get_value("ProductName").ok();
+            let build: Option<String> = key.get_value("CurrentBuildNumber").ok();
+            let display_version: Option<String> = key
+                .get_value("DisplayVersion")
+                .ok()
+                .or_else(|| key.get_value("ReleaseId").ok());
+
+            info.kernel = build.clone();
+            info.os_name = Some(
+                [product_name, display_version, build.map(|b| format!("(build {b})"))]
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            );
+        }
+
+        info
+    }
+
+    #[cfg(not(target_os = "windows"))]
     fn collect() -> Self {
         let mut info = Self::default();
 
@@ -186,6 +216,17 @@ impl HardwareInfo {
                     break;
                 }
             }
+        }
+
+        // Fallback for platforms without /proc (Windows, macOS): the same
+        // detection used for cache-size recommendations, so diagnostics
+        // reports real values instead of a blank Hardware section.
+        if info.cpu_cores.is_none() {
+            info.cpu_cores = Some(crate::system::detect_cpu_cores() as u32);
+        }
+        if info.memory_gb.is_none() {
+            let bytes = crate::system::detect_total_memory();
+            info.memory_gb = Some(bytes as f64 / 1024.0 / 1024.0 / 1024.0);
         }
 
         info

@@ -62,7 +62,7 @@ rlimit = "0.10"
 dokan = "0.3"
 dokan-sys = "0.3"
 widestring = "0.4"
-winapi = { version = "0.3", features = ["winnt", "ntstatus"] }
+winapi = { version = "0.3", features = ["winnt", "ntstatus", "sysinfoapi"] }
 winreg = "0.52"
 junction = "1.2"
 

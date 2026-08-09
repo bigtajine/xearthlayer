@@ -239,9 +239,27 @@ pub fn detect_total_memory() -> usize {
     fallback_memory()
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "windows")]
 pub fn detect_total_memory() -> usize {
-    // Fallback for non-Linux: 8GB
+    use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..unsafe { std::mem::zeroed() }
+    };
+
+    // SAFETY: `status` is a valid, correctly-sized MEMORYSTATUSEX with
+    // dwLength set as required by GlobalMemoryStatusEx's contract.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } != 0 {
+        status.ullTotalPhys as usize
+    } else {
+        fallback_memory()
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn detect_total_memory() -> usize {
+    // Fallback for other platforms: 8GB
     fallback_memory()
 }
 
